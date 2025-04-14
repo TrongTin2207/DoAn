@@ -23,7 +23,7 @@ def gen_coordinates_UE(num_UEs, radius_in, radius_out):
     coordinates_UE = list(zip(x, y))  
     return coordinates_UE
 
-def adjust_coordinates_UE(coordinates_UE, delta_coordinate):
+def adjust_coordinates_UE(coordinates_UE, delta_coordinate, radius_in, radius_out):
     # Khởi tạo seed cho ngẫu nhiên để kết quả có thể tái tạo
     new_coordinates_UE = []
     
@@ -36,11 +36,54 @@ def adjust_coordinates_UE(coordinates_UE, delta_coordinate):
         new_x = x + delta_x
         new_y = y + delta_y
         
+        #Tính khoảng cách từ tâm đảm bảo UE nằm trong các khoảng
+        distance_from_center = np.sqrt(new_x**2 + new_y**2)
+
+        #Thêm các ràng buộc về khoảng
+        if distance_from_center < radius_in:
+            #Nếu như UE trong bán kính vùng trong, chỉnh sao cho nằm trong khoảng trong
+            scale_factor = radius_in / distance_from_center
+            new_x *= scale_factor
+            new_y *= scale_factor
+        elif distance_from_center < radius_out:
+            #Nếu như UE trong bán kính vùng ngoài, chỉnh sao cho nằm trong khoảng ngoài
+            scale_factor = radius_out / distance_from_center
+            new_x *= scale_factor
+            new_y *= scale_factor
         # Thêm tọa độ mới vào danh sách
         new_coordinates_UE.append((new_x, new_y))
     
     return new_coordinates_UE
 
+#Hàm tính Handover
+def determine_handover(distances_RU_UE, current_RU_assignents, handover_margin=50):
+    num_RUs, num_UEs = distances_RU_UE.shape
+    new_RU_assignments = np.copy(current_RU_assignents)
+    handover_events = []
+
+    for ue_id in range (num_UEs):
+        #Lấy RU được chọn hiện tại
+        current_ru = np.where(current_RU_assignents[:, ue_id]==1)[0]
+        if len(current_ru) == 0:
+            #Nếu như không có RU nào được chọn thì chọn 1 RU
+            best_ru = np.argmin(distances_RU_UE[:, ue_id])
+            new_RU_assignments[best_ru, ue_id] = 1
+            continue
+
+        current_ru = current_ru[0]
+        current_distance = distances_RU_UE[current_ru, ue_id]
+
+        #Tìm RU gần nhất
+        closest_ru = np.argmin(distances_RU_UE[:, ue_id])
+        closest_distance = distances_RU_UE[closest_ru, ue_id]
+
+        #Kiểm tra nếu handover có thể xảy ra dựa vào khoảng cách được cải thiện
+        if (current_ru != closest_ru) and (current_distance - closest_distance > handover_margin):
+            new_RU_assignments[current_ru, ue_id] = 0
+            new_RU_assignments[closest_ru, ue_id] = 1
+            handover_events.append((ue_id, current_ru,closest_ru))
+        
+        return new_RU_assignments,handover_events
 #Hàm tính khoảng cách (d)
 def calculate_distances(coordinates_RU, coordinates_UE, num_RUs, num_UEs):
     distances_RU_UE = np.zeros((num_RUs, num_UEs))
@@ -254,3 +297,135 @@ def gen_mapping_and_requirements(num_UEs, num_slices, D_j_random_list, D_m_rando
     R_min_list = np.random.choice(R_min_random_list, size=num_UEs).tolist()
     
     return slice_mapping, D_j_list, D_m_list, R_min_list
+
+def calculate_rsrp(gain, p_ib, num_RUs, num_UEs):
+    rsrp_matrix = np.zeros((num_RUs, num_UEs))
+    for i in range(num_RUs):
+        for k in range(num_UEs):
+            allocated_power = np.sum(p_ib[i, :, k])
+            rsrp_linear = gain[i, k] * allocated_power
+
+            # Use a numeric approach instead of boolean evaluation
+            try:
+                # Try to handle the case when values are numeric
+                if isinstance(rsrp_linear, (int, float)) and rsrp_linear > 0:
+                    rsrp_matrix[i, k] = 10 * np.log10(rsrp_linear) + 30  # dBm
+                else:
+                    rsrp_matrix[i, k] = -float('inf')
+            except:
+                # Alternative approach for symbolic variables
+                # Use mathematical operations instead of conditionals
+                epsilon = 1e-10
+                # A numeric approximation approach:
+                safe_value = max(rsrp_linear, epsilon)  # This might need adjustment based on your library
+                rsrp_matrix[i, k] = 10 * np.log10(safe_value) + 30
+    
+    return rsrp_matrix
+
+def determine_handover_rsrp(rsrp_matrix, current_RU_assignments, rsrp_threshold = -110, hysteresis = 3):
+    num_RUs, num_UEs = rsrp_matrix.shape
+    new_RUs_assignments = np.copy(current_RU_assignments)
+    handover_events = []
+
+    for ue_id in range(num_UEs):
+        #Chọn RU hiện tại
+        current_ru_indices = np.where(current_RU_assignments[:, ue_id] == 1)[0]
+
+        if len(current_ru_indices) == 0:
+            #Nhiệm vụ ban đầu nếu hiện tại không có RU nào được chỉ định
+            best_ru = np.argmax(rsrp_matrix[:, ue_id])
+            if rsrp_matrix[best_ru, ue_id] >= rsrp_threshold:
+                new_RUs_assignments[best_ru, ue_id] = 1
+            continue
+
+        current_ru = current_ru_indices[0]
+        current_rsrp = rsrp_matrix[current_ru, ue_id]
+
+        #Kiểm tra nếu RSRP hiện tại dưới threshold (nhu cầu handover được kích hoạt)
+        if current_rsrp < rsrp_threshold:
+            #Tìm RU tốt nhất dựa trên RSRP
+            candidate_rus = np.argsort(rsrp_matrix[:, ue_id])[::-1] #Xếp từ trên xuống dưới
+            for candidate_ru in candidate_rus:
+                candidate_rsrp = rsrp_matrix[candidate_ru, ue_id]
+
+                #Kiểm tra nếu RU candidate trên mức threshold và tốt hơn so với hiện tại
+                if candidate_rsrp >= rsrp_threshold and candidate_ru != current_ru:
+                    new_RUs_assignments[current_ru, ue_id] = 0
+                    new_RUs_assignments[candidate_ru, ue_id] = 1
+                    handover_events.append((ue_id, current_ru, candidate_ru, current_rsrp, candidate_rsrp))
+                    break
+            else:
+                #Kiểm tra xem có RU nào khác có RSRP tốt hơn (với trễ)
+                best_ru = np.argmax(rsrp_matrix[:, ue_id])
+                best_rsrp = rsrp_matrix[best_ru, ue_id]
+
+                #Áp trễ để chặn ping-pong handover
+                if best_ru != current_ru and best_rsrp > current_rsrp + hysteresis:
+                    new_RUs_assignments[current_ru, ue_id] = 0
+                    new_RUs_assignments[best_ru, ue_id] = 1
+                    handover_events.append((ue_id, current_ru, best_ru, current_rsrp, best_rsrp))
+        return new_RUs_assignments, handover_events
+
+def visualize_handovers(coordiantes_RU, coordinates_UE_before, coordinates_UE_after, handover_events, radius_in, radius_out, frame, time_slot):
+    plt.figure(figsize=(12,10))
+
+    #Vẽ ranh giới mạng
+    circle_in = plt.Circle((0,0), radius_in, color='gray', fill = False, linestyle = '--', label = 'Inner Radius')
+    circle_out = plt.Circle((0,0), radius_out, color='black', fill = False, linestyle = '--', label = 'Outer Radius')
+    plt.gca().add_artist(circle_in)
+    plt.gca().add_artist(circle_out)
+
+    #Plot RUs
+    for i, (x,y) in enumerate(coordiantes_RU):
+        plt.scatter(x,y,color = 'green', marker='^',s=200, label='RU' if i ==0 else "")
+        plt.text(x, y+20, f"RU{i+1}", fontsize = 10, ha = 'center')
+    
+    #Plot UEs trước khi di chuyển
+    for i, (x,y) in enumerate(coordinates_UE_before):
+        if i < len(coordinates_UE_after): #Đảm bảo UE tồn tại ở 2 trạng thái
+            plt.scatter(x, y, color='blue', marker='o', alpha = 0.3)
+
+        #Plot UEs sau khi di chuyển
+        x_new, y_new = coordinates_UE_after[i]
+        plt.scatter(x_new, y_new, color='blue', marker='o', label='UE' if i == 0 else "")
+        plt.text(x_new, y_new+10, f"UE{i+1}", fontsize = 9, ha='center')
+        
+        #Vẽ vector di chuyển
+        plt.arrow(x, y, x_new-x, y_new-y, color='gray', width=1, head_width=10, head_length=10, alpha=0.7, lengt_includes_head=True)
+    
+    #Highlight sự kiện handover
+    for event in handover_events:
+        ue_id, old_ru, new_ru = event[0], event[1], event[2]
+        if ue_id < len(coordinates_UE_after):
+            x_ue, y_ue = coordinates_UE_after[ue_id]
+            x_old_ru, y_old_ru = coordiantes_RU[old_ru]
+            x_new_ru, y_new_ru = coordiantes_RU[new_ru]
+
+            #Vẽ đường từ RU cũ đến UE (ngắt kết nối)
+            plt.plot([x_old_ru, x_ue], [y_old_ru, y_ue], 'r--', linewidth=1.5, alpha=0.7)
+
+            #Vẽ đường từ UE đến RU mới (kết nối)
+            plt.plot([x_new_ru, x_ue], [y_new_ru, y_ue], 'g-', linewidth=1.5, alpha=0.7)
+
+            #Thêm annotation
+            plt.annotate(f"HO: UE{ue_id+1}\nRU{old_ru+1}->RU{new_ru+1}",
+                         xy=(x_ue, y_ue), xytext=(x_ue+30, y_ue+30),
+                         arrowprops=dict(arrowstyle="->", color='red'))
+        
+    plt.xlim(-radius_out * 1.2, radius_out * 1.2)
+    plt.ylim(-radius_out * 1.2, radius_out * 1.2)
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.axhline(0, color='black', linewidth=0.5, ls='--')
+    plt.axvline(0, color='black', linewidth=0.5, ls='--')
+    plt.grid(alpha=0.3)
+    plt.title(f"Network with UE Movement and Handovers (Frame {frame+1}, Time Slot {time_slot+1})")
+    plt.xlabel("X Coordinate")
+    plt.ylabel("Y Coordinate")
+    plt.legend(loc='upper right')
+    
+    # Save figure
+    result_dir = "./result"
+    os.makedirs(result_dir, exist_ok=True)
+    fig_name = f"{result_dir}/handover_visualization_f{frame}_t{time_slot}.pdf"
+    plt.savefig(fig_name)
+    plt.close()
