@@ -4,15 +4,23 @@ import matplotlib.pyplot as plt
 import os
 
 #Adding Coordinates constraint
-#Threshold of Handover
-
+#CU order not visible 
+#Constraint Coordinate (RU (two RUs are 70% radius far) and UE distance only), CU and DU as Physical links (No need coordinates, as they have considered to be linked)
 
 def gen_coordinates_RU(num_RUs, radius):
     circle_RU_out = radius * 0.65
-    angles = np.linspace(0, 2 * np.pi, num_RUs - 1, endpoint=False) 
-    x = np.concatenate(([0], circle_RU_out * np.cos(angles)))  
-    y = np.concatenate(([0], circle_RU_out * np.sin(angles)))  
-    coordinates_RU = list(zip(x, y)) 
+    #RU ở trung tâm
+    coordinates_RU = [(0,0)]
+
+    if num_RUs > 1:
+        #Tạo các góc để phân bố RUs quanh vòng tròn
+        angles = np.linspace(0, 2*np.pi, num_RUs - 1, endpoint=False)
+
+        #Tính toán vị trí cho các RU khác tại 65% bán kính
+        for angle in angles:
+            x = circle_RU_out * np.cos(angle)
+            y = circle_RU_out * np.sin(angle)
+            coordinates_RU.append((x,y))
     return coordinates_RU
 
 def gen_coordinates_UE(num_UEs, radius_in, radius_out):

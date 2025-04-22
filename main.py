@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 # =======================================================
 # ============== Tham số mô phỏng =======================
 # =======================================================
-num_RUs = 4                             # Số lượng RU (bao gồm RU ở tâm)
-num_DUs = 3                             # Số lượng DU
-num_CUs = 3                             # Số lượng CU
+num_RUs = 3                             # Số lượng RU (bao gồm RU ở tâm)
+num_DUs = 2                             # Số lượng DU
+num_CUs = 2                             # Số lượng CU
 num_UEs = 5                             # Tổng số lượng user cho tất dịch vụ (eMBB, mMTC, URLLC)
 num_RBs = 5                             # Số lượng của RBs
 num_antennas = 8                        # Số lượng anntenas
@@ -104,8 +104,7 @@ def main():
     # Create RAN topology with coordinate constraints (standard version, not handover version)
     G = RAN_topo.create_topo(
         num_RUs, num_DUs, num_CUs, 
-        P_j_random_list, A_j_random_list, A_m_random_list,
-        coordinate_constraints=coordinate_constraints, 
+        P_j_random_list, A_j_random_list, A_m_random_list, 
         RU_coordinates=coordinates_RU
     )
 

@@ -23,36 +23,25 @@ def create_topo(num_RUs, num_DUs, num_CUs, P_j_random_list, A_j_random_list, A_m
         if RU_coordinates and i < len(RU_coordinates):
             attributes['x'] = RU_coordinates[i][0]
             attributes['y'] = RU_coordinates[i][1]
+        '''
         elif coordinate_constraints:
             attributes['x'] = np.random.uniform(coordinate_constraints['x_min'], coordinate_constraints['x_max'])
             attributes['y'] = np.random.uniform(coordinate_constraints['y_min'], coordinate_constraints['y_max'])
-        
+        '''
         G.add_node(ru, **attributes)
         
     for i, du in enumerate(DUs):
         attributes = {
             'type': 'DU',
             'capacity': np.random.choice(A_j_random_list)
-        }
-        
-        # Generate coordinates based on constraints if provided
-        if coordinate_constraints:
-            attributes['x'] = np.random.uniform(coordinate_constraints['x_min'], coordinate_constraints['x_max'])
-            attributes['y'] = np.random.uniform(coordinate_constraints['y_min'], coordinate_constraints['y_max'])
-            
+        }   
         G.add_node(du, **attributes)
         
     for i, cu in enumerate(CUs):
         attributes = {
             'type': 'CU',
             'capacity': np.random.choice(A_m_random_list)
-        }
-        
-        # Generate coordinates based on constraints if provided
-        if coordinate_constraints:
-            attributes['x'] = np.random.uniform(coordinate_constraints['x_min'], coordinate_constraints['x_max'])
-            attributes['y'] = np.random.uniform(coordinate_constraints['y_min'], coordinate_constraints['y_max'])
-            
+        }   
         G.add_node(cu, **attributes)
 
     # Kết nối RUs với DUs (Mỗi DU có thể kết nối với tất cả các RU)
@@ -73,43 +62,91 @@ def draw_topo_coordinates(G):
     """
     Draw the network topology using node coordinates if available, otherwise use default layout
     """
-    # Check if coordinates are available
-    has_coords = all('x' in G.nodes[node] and 'y' in G.nodes[node] for node in G.nodes())
-    
-    if has_coords:
-        # Use specified coordinates
-        pos = {node: (G.nodes[node]['x'], G.nodes[node]['y']) for node in G.nodes()}
-    else:
         # Vị trí của các nút: RU, DU, CU xếp thành cột (fallback to default layout)
-        RUs = [node for node, data in G.nodes(data=True) if data['type'] == 'RU']
-        DUs = [node for node, data in G.nodes(data=True) if data['type'] == 'DU']
-        CUs = [node for node, data in G.nodes(data=True) if data['type'] == 'CU']
+    RUs = [node for node, data in G.nodes(data=True) if data['type'] == 'RU']
+    DUs = [node for node, data in G.nodes(data=True) if data['type'] == 'DU']
+    CUs = [node for node, data in G.nodes(data=True) if data['type'] == 'CU']
         
-        pos = {ru: (0, 3 - i) for i, ru in enumerate(RUs)}
-        pos.update({du: (1, 2.5 - i * 2) for i, du in enumerate(DUs)})
-        pos.update({cu: (2, 2 - i) for i, cu in enumerate(CUs)})
+    #Kiểm tra xem tất cả RU có tọa độ chưa
+    all_rus_have_coords = all('x' in G.nodes[ru] and 'y' in G.nodes[ru] for ru in RUs)
 
-    # Vẽ đồ thị với các tùy chỉnh
-    plt.figure(figsize=(10, 6))
-    nx.draw_networkx_edges(G, pos, width=2, alpha=0.5, edge_color='gray')
+    #Tạo dictionary chứa vị trí
+    pos = {}
 
-    # Vẽ các nút
-    node_colors = ['lightblue' if 'RU' in node else 'lightgreen' if 'DU' in node else 'lightcoral' for node in G.nodes()]
-    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=2000, linewidths=2)
+    #Vị trí của các RU sử dụng tọa độ của chúng nếu có
+    if all_rus_have_coords:
+        for ru in RUs:
+            x_scale = 0.001
+            y_scale = 0.001
+            pos[ru] = (G.nodes[ru]['x'] * x_scale, G.nodes[ru]['y'] * y_scale)
+        else:
+           for i, ru in enumerate(RUs):
+               pos[ru] = (-2, 3-i)
 
-    # Hiển thị thông tin nút
-    node_labels = {}
-    for node, data in G.nodes(data=True):
-        if data['type'] == 'RU':
-            node_labels[node] = f"{node}\nPower: {data['power']}"
-        else:  # 'DU' or 'CU'
-            node_labels[node] = f"{node}\nCap: {data['capacity']}"
+        #Sử dụng vị trí được fixed sẵn cho DU và CU (column layout)
+        for i, du in enumerate(DUs):
+            pos[du] = (0, 2.5 - i*2)
+        
+        for i, cu in enumerate(CUs):
+            pos[cu] = (2, 2-i)
+
+        #Vẽ graph
+        plt.figure(figsize=(10,8))
+
+        #Vẽ edge (physical links)
+        nx.draw_networkx_edges(G, pos, width=2, alpha=0.5, edge_color='gray')
+
+        #Vẽ node với các màu khác nhay
+        node_colors = {
+            'RU' : 'lightblue',
+            'DU' : 'lightgreen',
+            'CU' : 'lightcoral'
+        }
+
+        #Vẽ mỗi loại khác nhau với nhãn
+        for node_type, color in node_colors.items():
+            nodes = [node for node, data in G.nodes(data=True) if data['type'] == node_type]
+
+            #Bỏ qua nếu không có nút thuộc dạng này
+            if not nodes:
+                continue
+
+            nx.draw_networkx_nodes(G, pos,
+                                   nodelist=nodes,
+                                   node_color=color,
+                                   node_size=2000,
+                                   linewidths=2)
+            #Tạo nhãn dựa trên loại node
+            node_labels = {}
+            for node in nodes:
+                data = G.nodes[node]
+                if node_type == 'RU':
+                    node_labels[node] = f"{node}\nP: {data['power']}"
+                else: 
+                    node_labels[node] = f"{node}\nCap: {data['capacity']}"
+            nx.draw_networkx_labels(G, pos,
+                                    labels=node_labels,
+                                    font_size=10,
+                                    font_weight='bold',
+                                    font_color='black')
+            
+            if all_rus_have_coords:
+                #Lấy bán kính định ước để visualize từ tọa độ RU
+                ru_distances = [np.sqrt(G.nodes[ru]['x']**2 + G.nodes[ru]['y']**2) for ru in RUs if ru!= 'RU1']
+                if ru_distances:
+                    avg_radius = sum(ru_distances) / len(ru_distances)
+                    #Vẽ vòng ròn tại 65% bán kính
+                    circle = plt.Circle((0, 0), avg_radius * x_scale, fill = False, linestyle = '--', color = 'gray')
+                    plt.gca().add_patch(circle)
+                
+                #Thêm đường reference
+                plt.axhline(y=0, color='gray', linestyle='--', alpha=0.3)
+                plt.axvline(x=0, color='gray', linestyle='--', alpha=0.3)
     
-    nx.draw_networkx_labels(G, pos, labels=node_labels, font_size=10, font_weight='bold', font_color='black')
-
-    plt.axis('off')  # Tắt trục
-    plt.tight_layout()  # Điều chỉnh bố cục
-    plt.show()
+            plt.title(f"Network Model: {len(RUs)} RU, {len(DUs)} DU, {len(CUs)} CU", fontsize=15)
+            plt.axis('off')
+            plt.tight_layout()
+            plt.show()
 
 
 # Original draw function for backward compatibility
