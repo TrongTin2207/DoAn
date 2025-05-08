@@ -5,7 +5,8 @@ import traceback as tb
 
 SOLVER = cp.MOSEK
 
-def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R_min, epsilon,  arr_pi_sk, arr_phi_i_sk, logger=None):
+def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk, 
+               c=3e8, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None, logger=None):
     try:
         # Khởi tạo ma trận nhị phân: short_z_ib_sk (biến xác phân bổ ánh xạ UE k kết nối tới RU i qua RB b tại slice s)
         short_z_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
@@ -38,19 +39,26 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
                 for k in range(num_UEs):
                     short_phi_i_sk[i, s, k] = cp.Variable(boolean=True, name=f"short_phi_i_sk({i}, {s}, {k})")
         
-        # Khởi tạo các biến nhị phân: phi_i_sk, phi_j_sk, phi_m_sk
-        short_phi_i_sk = np.empty((num_RUs, num_slices, num_UEs), dtype=object)
-        for i in range(num_RUs):
+        # Khởi tạo các biến nhị phân: phi_j_sk for DU
+        short_phi_j_sk = np.empty((num_RUs, num_slices, num_UEs), dtype=object)  # Using num_RUs as num_DUs placeholder
+        for j in range(num_RUs):  # Using num_RUs as num_DUs placeholder
             for s in range(num_slices):
                 for k in range(num_UEs):
-                    short_phi_i_sk[i, s, k] = cp.Variable(boolean=True, name=f"short_phi_i_sk({i}, {s}, {k})")
+                    short_phi_j_sk[j, s, k] = cp.Variable(boolean=True, name=f"short_phi_j_sk({j}, {s}, {k})")
+        
+        # Khởi tạo các biến nhị phân: phi_m_sk for CU
+        short_phi_m_sk = np.empty((num_RUs, num_slices, num_UEs), dtype=object)  # Using num_RUs as num_CUs placeholder
+        for m in range(num_RUs):  # Using num_RUs as num_CUs placeholder
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    short_phi_m_sk[m, s, k] = cp.Variable(boolean=True, name=f"short_phi_m_sk({m}, {s}, {k})")
         
         # Biến tối ưu cho việc phân bổ
         short_pi_sk = cp.Variable((num_slices, num_UEs), boolean=True, name="short_pi_sk")  # Tối ưu số lượng UE
 
         short_total_R_sk = 0
-        # Hàm mục tiêu: Tối ưu tổng công suất phân bổ
-        #objective = cp.Maximize(cp.sum([short_mu_ib_sk[i, b, s, k] for i in range(num_RUs) for b in range(num_RBs) for s in range(num_slices) for k in range(num_UEs)]))
+        
+        # Hàm mục tiêu: Tối ưu tổng công suất phân bổ và tối đa hoá số lượng UE
         objective = cp.Maximize(cp.sum(short_pi_sk))
 
         # Danh sách ràng buộc
@@ -60,14 +68,46 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
         for b in range(num_RBs):
             constraints.append(cp.sum([short_z_ib_sk[i, b, s, k] for s in range(num_slices) for k in range(num_UEs) for i in range(num_RUs)]) <= 1)
         
-
-        # Ràng buộc: Đảm bảo QoS (Data rate)
+        # Calculate data rates R_sk
+        short_R_sk = np.empty((num_slices, num_UEs), dtype=object)
         for s in range(num_slices):
             for k in range(num_UEs):
-                R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * short_mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
-                constraints.append(R_sk >= R_min * short_pi_sk[s, k])
-                short_total_R_sk += R_sk
-                
+                short_R_sk[s, k] = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * short_mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
+                constraints.append(short_R_sk[s, k] >= R_min * short_pi_sk[s, k])
+                short_total_R_sk += short_R_sk[s, k]
+        
+        # Add latency constraints for uRLLC users if parameters are provided
+        if max_latency is not None and d_sk is not None and L_cu is not None and L_du is not None and rho_du is not None and mu_s is not None and lambda_s is not None:
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    # Calculate latency components
+                    # 1. Propagation Latency: L_s,k^prop(t) = (1/c) * d_s,k * z_s,k^bi[t]
+                    L_prop = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_prop += (1/c) * d_sk[s, k] * short_z_ib_sk[i, b, s, k]
+                    
+                    # 2. Transmission Latency: L_s,k^trans = Λ_s / R_s,k
+                    # Using a safe approach to avoid division by zero with a small constant
+                    small_constant = 1e-10
+                    L_trans = lambda_s[s] / (short_R_sk[s, k] + small_constant)
+                    
+                    # 3. Queuing Latency: L_s,k^queue = ρ_du * z_s,k^bi / (μ_s - Λ_s)
+                    L_queue = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_queue += rho_du[s] * short_z_ib_sk[i, b, s, k] / (mu_s[s] - lambda_s[s])
+                    
+                    # 4. Processing Latency: L_s,k^proc = L_cu * ϕ_s,k^m + ϕ_s,k^j * L_du
+                    L_proc = 0
+                    for m in range(num_RUs):  # Using as placeholder for CUs
+                        L_proc += L_cu * short_phi_m_sk[m, s, k]
+                    for j in range(num_RUs):  # Using as placeholder for DUs
+                        L_proc += short_phi_j_sk[j, s, k] * L_du
+                    
+                    # Total Latency constraint for uRLLC users
+                    total_latency = L_prop + L_trans + L_queue + L_proc
+                    constraints.append(total_latency <= max_latency * short_pi_sk[s, k])
 
         # Ràng buộc: Tổng công suất phân bổ <= công suất tối đa của RU
         for i in range(num_RUs):
@@ -108,7 +148,7 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
             print(f"{time.process_time()} [solver] actual_solve")
         else:
             logger.add("[solver] actual_solve")
-        problem.solve(solver = SOLVER)
+        problem.solve(solver=SOLVER)
         if logger is None:
             print(f"{time.process_time()} [solver] actual_solve {problem.status}")
         else:
@@ -125,7 +165,9 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
         return None, None, None, None, None
 
 
-def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, logger = None):
+def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, 
+              l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, c=3e8, d_sk=None, max_latency=None, L_cu=None, L_du=None, 
+              rho_du=None, mu_s=None, lambda_s=None, logger=None):
     try:
         # Khởi tạo ma trận nhị phân: z_ib_sk
         z_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
@@ -169,11 +211,19 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
             for s in range(num_slices):
                 for k in range(num_UEs):
                     phi_m_sk[m, s, k] = cp.Variable(boolean=True, name=f"phi_m_sk({m}, {s}, {k})")
+                    
         # Biến tối ưu cho việc phân bổ
         pi_sk = cp.Variable((num_slices, num_UEs), boolean=True, name="obj") 
 
+        # Calculate data rates R_sk
+        R_sk = np.empty((num_slices, num_UEs), dtype=object)
         total_R_sk = 0
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                R_sk[s, k] = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
+                total_R_sk += R_sk[s, k]
 
+        # Objective function: maximize number of served UEs and total rate
         objective = cp.Maximize(gamma * cp.sum(pi_sk) + (1 - gamma) * total_R_sk * 1e-6)
 
         # Danh sách ràng buộc
@@ -186,10 +236,45 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
         # Ràng buộc: Đảm bảo QoS (Data rate)
         for s in range(num_slices):
             for k in range(num_UEs):
-                R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
-
-                constraints.append(R_sk  >= R_min * pi_sk[s, k])
-                total_R_sk += R_sk
+                constraints.append(R_sk[s, k] >= R_min * pi_sk[s, k])
+        
+        # Add latency constraints for uRLLC users if parameters are provided
+        if max_latency is not None and d_sk is not None and L_cu is not None and L_du is not None and rho_du is not None and mu_s is not None and lambda_s is not None:
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    # Calculate latency components
+                    # 1. Propagation Latency: L_s,k^prop(t) = (1/c) * d_s,k * z_s,k^bi[t]
+                    L_prop = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_prop += (1/c) * d_sk[s, k] * z_ib_sk[i, b, s, k]
+                    
+                    # 2. Transmission Latency: L_s,k^trans = Λ_s / R_s,k
+                    # Using a safe approach to avoid division by zero with a small constant
+                    small_constant = 1e-10
+                    L_trans = lambda_s[s] / (R_sk[s, k] + small_constant)
+                    
+                    # 3. Queuing Latency: L_s,k^queue = ρ_du * z_s,k^bi / (μ_s - Λ_s)
+                    L_queue = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_queue += rho_du[s] * z_ib_sk[i, b, s, k] / (mu_s[s] - lambda_s[s])
+                    
+                    # 4. Processing Latency: L_s,k^proc = L_cu * ϕ_s,k^m + ϕ_s,k^j * L_du
+                    L_proc = 0
+                    for m in range(num_CUs):
+                        L_proc += L_cu * phi_m_sk[m, s, k]
+                    for j in range(num_DUs):
+                        L_proc += phi_j_sk[j, s, k] * L_du
+                    
+                    # Total Latency constraint for uRLLC users
+                    total_latency = L_prop + L_trans + L_queue + L_proc
+                    constraints.append(total_latency <= max_latency * pi_sk[s, k])
+                    
+                    # For eMBB users, add data rate upper bound constraint (R ≤ R̄)
+                    # Assuming slice 0 is uRLLC and slice 1 is eMBB for example
+                    if s == 1:  # If this is eMBB slice
+                        constraints.append(R_sk[s, k] <= 0.25)  # 0.25ms as per Image 2
 
         # Ràng buộc: Tổng công suất phân bổ <= công suất tối đa của RU
         for i in range(num_RUs):
@@ -251,21 +336,29 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
 
         # Giải bài toán tối ưu
         problem = cp.Problem(objective, constraints)
-        problem.solve(solver = cp.MOSEK)
-
-        #with open('./Wireless-RAN-Mapping/result/demo-debug.prob', 'wt') as f:
-        #    f.write(str(problem))
+        if logger is None:
+            print(f"{time.process_time()} [solver] actual_solve")
+        else:
+            logger.add("[solver] actual_solve")
+        problem.solve(solver=SOLVER)
+        if logger is None:
+            print(f"{time.process_time()} [solver] actual_solve {problem.status}")
+        else:
+            logger.add(f"[solver] actual_solve {problem.status}")
         
         return pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk
 
-    except cp.SolverError:
-        print('Solver error: non_feasible')
+    except cp.SolverError as e:
+        if logger is None:
+            print(f'Solver error: {e}')
+        else:
+            logger.add(f"[solver] ERROR: {e}")
         return None, None, None, None, None, None, None, None
     except Exception as e:
         print(f'An error occurred: {e}')
         return None, None, None, None, None, None, None, None
 
-def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, arr_phi_i_sk, logger = None):
+def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, arr_phi_i_sk, c=3e8, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None, logger=None):
     try:
         # Khởi tạo ma trận nhị phân: nearest_z_ib_sk
         nearest_z_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
@@ -313,7 +406,13 @@ def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RB
         # Biến tối ưu cho việc phân bổ
         nearest_pi_sk = cp.Variable((num_slices, num_UEs), boolean=True, name="obj") 
 
+        # Calculate data rates R_sk
+        nearest_R_sk = np.empty((num_slices, num_UEs), dtype=object)
         nearest_total_R_sk = 0
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                nearest_R_sk[s, k] = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * nearest_mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
+                nearest_total_R_sk += nearest_R_sk[s, k]
 
         objective = cp.Maximize(gamma * cp.sum(nearest_pi_sk) + (1 - gamma) * nearest_total_R_sk * 1e-6)
 
@@ -327,10 +426,45 @@ def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RB
         # Ràng buộc: Đảm bảo QoS (Data rate)
         for s in range(num_slices):
             for k in range(num_UEs):
-                R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * nearest_mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
-
-                constraints.append(R_sk >= R_min * nearest_pi_sk[s, k])
-                nearest_total_R_sk += R_sk
+                constraints.append(nearest_R_sk[s, k] >= R_min * nearest_pi_sk[s, k])
+        
+        # Add latency constraints for uRLLC users if parameters are provided
+        if max_latency is not None and d_sk is not None and L_cu is not None and L_du is not None and rho_du is not None and mu_s is not None and lambda_s is not None:
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    # Calculate latency components based on Image 2
+                    # 1. Propagation Latency: L_s,k^prop(t) = (1/c) * d_s,k * z_s,k^bi[t]
+                    L_prop = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_prop += (1/c) * d_sk[s, k] * nearest_z_ib_sk[i, b, s, k]
+                    
+                    # 2. Transmission Latency: L_s,k^trans = Λ_s / R_s,k
+                    # Using a safe approach to avoid division by zero with a small constant
+                    small_constant = 1e-10
+                    L_trans = lambda_s[s] / (nearest_R_sk[s, k] + small_constant)
+                    
+                    # 3. Queuing Latency: L_s,k^queue = ρ_du * z_s,k^bi / (μ_s - Λ_s)
+                    L_queue = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_queue += rho_du[s] * nearest_z_ib_sk[i, b, s, k] / (mu_s[s] - lambda_s[s])
+                    
+                    # 4. Processing Latency: L_s,k^proc = L_cu * ϕ_s,k^m + ϕ_s,k^j * L_du
+                    L_proc = 0
+                    for m in range(num_CUs):
+                        L_proc += L_cu * nearest_phi_m_sk[m, s, k]
+                    for j in range(num_DUs):
+                        L_proc += nearest_phi_j_sk[j, s, k] * L_du
+                    
+                    # Total Latency constraint for uRLLC users
+                    total_latency = L_prop + L_trans + L_queue + L_proc
+                    constraints.append(total_latency <= max_latency * nearest_pi_sk[s, k])
+                    
+                    # For eMBB users, add data rate upper bound constraint (R ≤ R̄)
+                    # Assuming slice 0 is uRLLC and slice 1 is eMBB for example
+                    if s == 1:  # If this is eMBB slice
+                        constraints.append(nearest_R_sk[s, k] <= 0.25)  # 0.25ms as per Image 2
 
         # Ràng buộc: Tổng công suất phân bổ <= công suất tối đa của RU
         for i in range(num_RUs):
@@ -342,7 +476,6 @@ def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RB
             total_du = cp.sum([nearest_phi_j_sk[j, s, k] * D_j[k] for s in range(num_slices) for k in range(num_UEs)])
             constraints.append(total_du <= A_j[j])
         
-
         # Ràng buộc: Tổng tài nguyên của slice sử dụng CU <= tài nguyên có sẵn tại CU
         for m in range(num_CUs):
             total_cu = cp.sum([nearest_phi_m_sk[m, s, k] * D_m[k] for s in range(num_slices) for k in range(num_UEs)])
@@ -397,33 +530,36 @@ def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RB
                 for k in range(num_UEs):
                     constraints.append(nearest_phi_i_sk[i, s, k] == nearest_phi_i_sk[i, s, k] * arr_phi_i_sk[i, s, k])
 
-   
         # Giải bài toán tối ưu
         problem = cp.Problem(objective, constraints)
         if logger is None:
             print(f"{time.process_time()} [solver] actual_solve")
         else:
             logger.add("[solver] actual_solve")
-        problem.solve(solver = SOLVER)
+        problem.solve(solver=SOLVER)
         if logger is None:
             print(f"{time.process_time()} [solver] actual_solve {problem.status}")
         else:
             logger.add(f"[solver] actual_solve {problem.status}")
-
-        #with open('./Wireless-RAN-Mapping/result/demo-debug.prob', 'wt') as f:
-        #    f.write(str(problem))
-        
         
         return nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk, nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk
 
-    except cp.SolverError:
-        print('Solver error: non_feasible')
-        return None, None, None, None, None, None, None
+    except cp.SolverError as e:
+        if logger is None:
+            print(f'Solver error: {e}')
+        else:
+            logger.add(f"[solver] ERROR: {e}")
+        return None, None, None, None, None, None, None, None
     except Exception as e:
-        print(f'An error occurred: {e}')
-        return None, None, None, None, None, None, None
+        if logger is None:
+            print(f'An error occurred: {e}')
+            print(tb.format_exc())
+        else:
+            logger.add(f"[solver] ERROR: {e}")
+            logger.add(tb.format_exc())
+        return None, None, None, None, None, None, None, None
 
-def mapping_equal_power(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, nearest_phi_i_sk):
+def mapping_equal_power(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, nearest_phi_i_sk, c=3e8, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None, logger=None):
     try:
         # Khởi tạo ma trận nhị phân: z_ib_sk
         z_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
@@ -467,10 +603,17 @@ def mapping_equal_power(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
             for s in range(num_slices):
                 for k in range(num_UEs):
                     phi_m_sk[m, s, k] = cp.Variable(boolean=True, name=f"phi_m_sk({m}, {s}, {k})")
+        
         # Biến tối ưu cho việc phân bổ
         pi_sk = cp.Variable((num_slices, num_UEs), boolean=True, name="obj") 
 
-        total_data_rate = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for s in range(num_slices) for k in range(num_UEs) for b in range(num_RBs)]) 
+        # Calculate data rates R_sk
+        R_sk = np.empty((num_slices, num_UEs), dtype=object)
+        total_data_rate = 0
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                R_sk[s, k] = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
+                total_data_rate += R_sk[s, k]
 
         objective = cp.Maximize(gamma * cp.sum(pi_sk) + (1 - gamma) * total_data_rate * 1e-6)
 
@@ -484,9 +627,45 @@ def mapping_equal_power(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
         # Ràng buộc: Đảm bảo QoS (Data rate)
         for s in range(num_slices):
             for k in range(num_UEs):
-                R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
+                constraints.append(R_sk[s, k] >= R_min * pi_sk[s, k])
 
-                constraints.append(R_sk >= R_min * pi_sk[s, k])
+        # Add latency constraints for uRLLC users if parameters are provided
+        if max_latency is not None and d_sk is not None and L_cu is not None and L_du is not None and rho_du is not None and mu_s is not None and lambda_s is not None:
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    # Calculate latency components based on Image 2
+                    # 1. Propagation Latency: L_s,k^prop(t) = (1/c) * d_s,k * z_s,k^bi[t]
+                    L_prop = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_prop += (1/c) * d_sk[s, k] * z_ib_sk[i, b, s, k]
+                    
+                    # 2. Transmission Latency: L_s,k^trans = Λ_s / R_s,k
+                    # Using a safe approach to avoid division by zero with a small constant
+                    small_constant = 1e-10
+                    L_trans = lambda_s[s] / (R_sk[s, k] + small_constant)
+                    
+                    # 3. Queuing Latency: L_s,k^queue = ρ_du * z_s,k^bi / (μ_s - Λ_s)
+                    L_queue = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_queue += rho_du[s] * z_ib_sk[i, b, s, k] / (mu_s[s] - lambda_s[s])
+                    
+                    # 4. Processing Latency: L_s,k^proc = L_cu * ϕ_s,k^m + ϕ_s,k^j * L_du
+                    L_proc = 0
+                    for m in range(num_CUs):
+                        L_proc += L_cu * phi_m_sk[m, s, k]
+                    for j in range(num_DUs):
+                        L_proc += phi_j_sk[j, s, k] * L_du
+                    
+                    # Total Latency constraint for uRLLC users
+                    total_latency = L_prop + L_trans + L_queue + L_proc
+                    constraints.append(total_latency <= max_latency * pi_sk[s, k])
+                    
+                    # For eMBB users, add data rate upper bound constraint (R ≤ R̄)
+                    # Assuming slice 0 is uRLLC and slice 1 is eMBB for example
+                    if s == 1:  # If this is eMBB slice
+                        constraints.append(R_sk[s, k] <= 0.25)  # 0.25ms as per Image 2
 
         # Ràng buộc: Tổng công suất phân bổ <= công suất tối đa của RU
         for i in range(num_RUs):
@@ -551,7 +730,6 @@ def mapping_equal_power(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
             for i in range(num_RUs):
                 for k in range(num_UEs):
                     constraints.append(phi_i_sk[i, s, k] == phi_i_sk[i, s, k] * nearest_phi_i_sk[i, s, k])
-
    
         # Giải bài toán tối ưu
         problem = cp.Problem(objective, constraints)
