@@ -357,7 +357,7 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
     except Exception as e:
         print(f'An error occurred: {e}')
         return None, None, None, None, None, None, None, None
-
+'''
 def mapping_RU_nearest_UE(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, arr_phi_i_sk, c=3e8, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None, logger=None):
     try:
         # Khởi tạo ma trận nhị phân: nearest_z_ib_sk
@@ -746,3 +746,4 @@ def mapping_equal_power(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
     except Exception as e:
         print(f'An error occurred: {e}')
         return None, None, None, None, None, None, None, None
+'''
