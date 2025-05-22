@@ -23,8 +23,77 @@ def safe_float(value):
         return float(value)
     return 0.0  # Default case
 
+def validate_latency_constraints(num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
+                                z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
+                                c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger):
+    """
+    Validate latency constraints for uRLLC users
+    """
+    latency_valid = True
+    
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if pi_sk_val[s, k] > 0.5:  # UE is selected
+                # Calculate latency components
+                
+                # 1. Propagation Latency: L_s,k^prop(t) = (1/c) * d_s,k * z_s,k^bi[t]
+                L_prop = 0.0
+                for i in range(num_RUs):
+                    for b in range(num_RBs):
+                        L_prop += (1.0/c) * safe_float(d_sk[s, k]) * z_ib_sk_val[i, b, s, k]
+                
+                # 2. Transmission Latency: L_s,k^trans = Λ_s / R_s,k
+                small_constant = 1e-10
+                lambda_s_val = safe_float(lambda_s[s])
+                R_sk_safe = max(R_sk_val[s, k], small_constant)  # Avoid division by zero
+                L_trans = lambda_s_val / R_sk_safe
+                
+                # 3. Queuing Latency: L_s,k^queue = ρ_du * z_s,k^bi / (μ_s - Λ_s)
+                L_queue = 0.0
+                rho_du_val = safe_float(rho_du[s])
+                mu_s_val = safe_float(mu_s[s])
+                denominator = mu_s_val - lambda_s_val
+                
+                if denominator > 1e-10:  # Avoid division by zero
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            L_queue += rho_du_val * z_ib_sk_val[i, b, s, k] / denominator
+                else:
+                    logger.add(f"Warning: μ_s - Λ_s is too small for slice {s}, queuing latency may be invalid")
+                    L_queue = float('inf')  # Invalid queuing latency
+                
+                # 4. Processing Latency: L_s,k^proc = L_cu * ϕ_s,k^m + ϕ_s,k^j * L_du
+                L_proc = 0.0
+                L_cu_val = safe_float(L_cu)
+                L_du_val = safe_float(L_du)
+                
+                # CU processing latency
+                for m in range(num_CUs):
+                    L_proc += L_cu_val * phi_m_sk_val[m, s, k]
+                
+                # DU processing latency
+                for j in range(num_DUs):
+                    L_proc += phi_j_sk_val[j, s, k] * L_du_val
+                
+                # Total Latency
+                total_latency = L_prop + L_trans + L_queue + L_proc
+                max_latency_val = safe_float(max_latency)
+                
+                # Validate latency constraint
+                if total_latency > max_latency_val + 1e-6:  # Allow small tolerance
+                    logger.add(f"Latency violation: UE ({s},{k}) total latency {total_latency:.6f} > max {max_latency_val}")
+                    logger.add(f"  - Propagation: {L_prop:.6f}")
+                    logger.add(f"  - Transmission: {L_trans:.6f}")
+                    logger.add(f"  - Queuing: {L_queue:.6f}")
+                    logger.add(f"  - Processing: {L_proc:.6f}")
+                    latency_valid = False
+    
+    return latency_valid
+
 def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R_min, epsilon, 
-                                arr_pi_sk, arr_phi_i_sk, pi_sk_result, z_ib_sk_result, p_ib_sk_result, mu_ib_sk_result, logger=None):
+                                arr_pi_sk, arr_phi_i_sk, pi_sk_result, z_ib_sk_result, p_ib_sk_result, mu_ib_sk_result, 
+                                c=None, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None,
+                                logger=None):
     if logger is None:
         logger = ValidationLogger()
     
@@ -145,15 +214,42 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     
     logger.add(f"pi_sk matches input array: {pi_sk_match}")
     
-    # 6. Calculate and display objective value (max number of served UEs)
+    # 6. Validate latency constraints if parameters are provided
+    latency_constraint_valid = True
+    if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
+        logger.add("Validating latency constraints...")
+        # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)
+        # We need dummy phi arrays for short term validation
+        phi_j_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
+        phi_m_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
+        
+        # For short term, we can assume simple mapping based on phi_i_sk
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                for i in range(num_RUs):
+                    if arr_phi_i_sk[i, s, k] > 0.5:
+                        phi_j_sk_val[i, s, k] = 1.0  # Map to corresponding DU
+                        phi_m_sk_val[i, s, k] = 1.0  # Map to corresponding CU
+        
+        latency_constraint_valid = validate_latency_constraints(
+            num_slices, num_UEs, num_RUs, num_RBs, num_RUs, num_RUs,  # Using num_RUs for DUs and CUs
+            z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
+            c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
+        )
+    else:
+        logger.add("Latency parameters not provided, skipping latency validation")
+    
+    logger.add(f"Latency constraint validated: {latency_constraint_valid}")
+    
+    # 7. Calculate and display objective value (max number of served UEs)
     served_UEs = np.sum(pi_sk_val)
     logger.add(f"Total served UEs: {served_UEs} out of {num_slices * num_UEs}")
     
-    # 7. Calculate and display total data rate
+    # 8. Calculate and display total data rate
     total_rate = np.sum(R_sk_val)
     logger.add(f"Total data rate: {total_rate:.4f}")
     
-    all_valid = rb_allocation_valid and power_allocation_valid and mu_constraint_valid and rate_constraint_valid and pi_sk_match
+    all_valid = rb_allocation_valid and power_allocation_valid and mu_constraint_valid and rate_constraint_valid and pi_sk_match and latency_constraint_valid
     logger.add(f"\nAll constraints validated: {all_valid}")
     
     return all_valid, R_sk_val
@@ -161,7 +257,9 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
 def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, 
                               R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
                               pi_sk_result, z_ib_sk_result, p_ib_sk_result, mu_ib_sk_result, 
-                              phi_i_sk_result, phi_j_sk_result, phi_m_sk_result, logger=None):
+                              phi_i_sk_result, phi_j_sk_result, phi_m_sk_result, 
+                              c=None, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None,
+                              logger=None):
     """
     Validate the solution from the long_term optimization model
     """
@@ -411,7 +509,36 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
     
     logger.add(f"Slice mapping constraint validated: {slice_map_valid}")
     
-    # 12. Calculate and display objective value
+    # 12. Validate latency constraints if parameters are provided
+    latency_constraint_valid = True
+    if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
+        logger.add("Validating latency constraints...")
+        latency_constraint_valid = validate_latency_constraints(
+            num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
+            z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
+            c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
+        )
+    else:
+        logger.add("Latency parameters not provided, skipping latency validation")
+    
+    logger.add(f"Latency constraint validated: {latency_constraint_valid}")
+    
+    # 13. Check eMBB data rate upper bound if applicable
+    embb_rate_valid = True
+    if max_latency is not None:  # If latency constraints are used, check eMBB bounds
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if pi_sk_val[s, k] > 0.5:  # UE is selected
+                    # Assuming slice 1 is eMBB (you may need to adjust this based on your slice definitions)
+                    if s == 1:  # eMBB slice
+                        embb_max_rate = 0.25  # 0.25ms as mentioned in your code
+                        if R_sk_val[s, k] > embb_max_rate + 1e-6:
+                            logger.add(f"eMBB rate violation: UE ({s},{k}) rate {R_sk_val[s, k]:.4f} > max {embb_max_rate}")
+                            embb_rate_valid = False
+    
+    logger.add(f"eMBB rate upper bound validated: {embb_rate_valid}")
+    
+    # 14. Calculate and display objective value
     served_UEs = np.sum(pi_sk_val)
     total_rate = np.sum(R_sk_val)
     gamma_val = safe_float(gamma)
@@ -423,7 +550,7 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
     
     all_valid = (rb_allocation_valid and power_allocation_valid and mu_constraint_valid and rate_constraint_valid and
                 du_resource_valid and cu_resource_valid and mapping_valid and phi_z_valid and 
-                ru_du_valid and du_cu_valid and slice_map_valid)
+                ru_du_valid and du_cu_valid and slice_map_valid and latency_constraint_valid and embb_rate_valid)
     
     logger.add(f"\nAll constraints validated: {all_valid}")
     
