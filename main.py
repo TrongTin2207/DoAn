@@ -2,7 +2,6 @@ import gen_RU_UE
 import wireless
 import RAN_topo
 import solving
-import benchmark
 import other_function
 import numpy as np
 import datetime
@@ -19,7 +18,7 @@ num_CUs = 2                             # Số lượng CU
 num_UEs = 5                             # Tổng số lượng user cho tất dịch vụ (eMBB, mMTC, URLLC)
 num_RBs = 5                             # Số lượng của RBs
 num_antennas = 8                        # Số lượng anntenas
-num_slices = 3                          # Số lượng loại dịch vụ - Changed to 3 to use all slice types
+num_slices = 2                          # Số lượng loại dịch vụ - Changed to 2 to use all slice types
 
 radius_in = 100                         # Bán kính vòng tròn trong (km)
 radius_out = 1000                       # Bán kính vòng tròn ngoài (km)
@@ -41,7 +40,7 @@ path_loss_exp = 37.6
 if num_slices == 1:
     slices = ["eMBB"]                               # Tập các loại slice
 else:
-    slices = ["eMBB", "ULLRC", "mMTC"]              # Tập các loại slice
+    slices = ["eMBB", "ULLRC"]              # Tập các loại slice
 
 speed_of_light = 3e8                    # Speed of light in meters/second (m/s)
 speed_of_light_km_ms = speed_of_light / 1e6  # Speed of light in km/ms for propagation delay calculation
@@ -162,29 +161,25 @@ def main():
         )
 
         # Use enhanced slice assignment function instead of simple mapping
-        if num_slices == 3:
-            # Use the new slice assignment function with customized thresholds
+        if num_slices == 2:
             bandwidth_thresholds = {
-                'mMTC': 1,      # For IoT devices with low bandwidth (<=1 Mbps)
                 'eMBB': 6,      # For regular users (1-6 Mbps)
-                'ULLRC': float('inf')  # For high-priority, low-latency traffic (>6 Mbps)
+                'ULLRC': float('inf')  # For high-priority traffic (>6 Mbps)
             }
+            # Create and assign slices with more sophisticated logic
             slice_names, R_min, D_j, D_m = gen_RU_UE.create_and_assign_slices_with_thresholds(
-                num_UEs, D_j_random_list, D_m_random_list, R_min_random_list, bandwidth_thresholds)
+                num_UEs, D_j_random_list, D_m_random_list, R_min_random_list, bandwidth_thresholds
+            )
             
             # Convert slice names to mapping matrix
             slice_mapping = np.zeros((num_slices, num_UEs), dtype=int)
             for i, name in enumerate(slice_names):
-                if name == "eMBB":
-                    slice_mapping[0, i] = 1
-                elif name == "ULLRC":
-                    slice_mapping[1, i] = 1
-                elif name == "mMTC":
-                    slice_mapping[2, i] = 1
+                slice_mapping[0 if name == "eMBB" else 1, i] = 1
         else:
-            # Use default simple mapping for single slice
+            # Use original simple mapping for single slice
             slice_mapping, D_j, D_m, R_min = gen_RU_UE.gen_mapping_and_requirements(
-                num_UEs, num_slices, D_j_random_list, D_m_random_list, R_min_random_list)
+                num_UEs, num_slices, D_j_random_list, D_m_random_list, R_min_random_list
+            )
 
         # Calculate channel gain
         gain = wireless.channel_gain(distances_RU_UE, num_slices, num_RUs, num_UEs, num_RBs, num_antennas, 
@@ -195,12 +190,57 @@ def main():
         )
 
         # Long-term solution: solve global optimization
-        validation_log_file.write("===== LONG-TERM SOLUTION VALIDATION =====\n")
-        pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk = solving.long_term(
+        validation_log_file.write("\n===== LONG-TERM SOLUTION VALIDATION =====\n")
+        validation_log_file.write(f"Network Parameters:\n")
+        validation_log_file.write(f"- Number of UEs: {num_UEs}\n")
+        validation_log_file.write(f"- Number of RUs: {num_RUs}\n")
+        validation_log_file.write(f"- Total available power per RU: {P_i} W\n")
+        validation_log_file.write(f"- Resource blocks bandwidth: {rb_bandwidth} Hz\n")
+        validation_log_file.write(f"- Minimum rate requirements: {R_min} bps\n")
+        validation_log_file.write(f"- DU/CU resource limits: {A_j}/{A_m}\n")
+        validation_log_file.write(f"- Resource demands: DU={D_j}, CU={D_m}\n")
+        validation_log_file.write(f"- Slice mapping matrix:\n{slice_mapping}\n")
+        validation_log_file.write(f"- Maximum channel gain: {np.max(gain)}\n")
+        validation_log_file.write(f"- Minimum channel gain: {np.min(gain)}\n")
+        
+        long_term_result = solving.long_term(
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, 
-            l_ru_du, l_du_cu, epsilon, gamma, slice_mapping
+            l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
+            logger=logger  # Pass logger to get solver messages
         )
+
+        # Check if any results are None before unpacking
+        if any(x is None for x in long_term_result):
+            logger.add(f"[solve] Frame {f+1}: No feasible solution found in long-term!")
+            validation_log_file.write("\nLong-term solution failed with the following violations:\n")
+            
+            # Calculate theoretical maximum achievable rate
+            max_possible_rate = np.sum([rb_bandwidth * np.log2(1 + np.max(gain) * P_i[0] / noise_power_watts) 
+                                      for _ in range(num_RBs)])
+            validation_log_file.write(f"- Maximum theoretically achievable rate: {max_possible_rate/1e6:.2f} Mbps\n")
+            validation_log_file.write(f"- Required minimum rate: {R_min/1e6:.2f} Mbps\n")
+            
+            # Check resource constraints
+            total_du_demand = np.sum([D_j[k] for k in range(num_UEs)])
+            total_cu_demand = np.sum([D_m[k] for k in range(num_UEs)])
+            validation_log_file.write(f"- Total DU resource demand: {total_du_demand} (limit: {A_j})\n")
+            validation_log_file.write(f"- Total CU resource demand: {total_cu_demand} (limit: {A_m})\n")
+            
+            # Check topology constraints
+            validation_log_file.write("- RU-DU-CU connectivity status:\n")
+            for i in range(num_RUs):
+                du_connections = sum(l_ru_du[i])
+                if du_connections == 0:
+                    validation_log_file.write(f"  RU{i} has no DU connections\n")
+                for j in range(num_DUs):
+                    if l_ru_du[i][j] == 1:
+                        cu_connections = sum(l_du_cu[j])
+                        if cu_connections == 0:
+                            validation_log_file.write(f"  DU{j} (connected to RU{i}) has no CU connections\n")
+            continue
+
+        pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk = long_term_result
 
         # Check solution and save results
         if (pi_sk is None):
@@ -213,7 +253,8 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk
+            pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk,
+            logger=validation_logger
         )
         validation_log_file.write(f"\nLong-term validation result: {'PASSED' if valid_long_term else 'FAILED'}\n")
         for log in validation_logger.get_logs():
@@ -267,18 +308,42 @@ def main():
                 (short_gain)
             )
 
-            # Short-term optimization
-            short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk = solving.short_term(
-                num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, 
-                short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk
-            )
+            # Short-term optimization with None checks
+            validation_log_file.write(f"\nShort-term optimization parameters:\n")
+            validation_log_file.write(f"- New UE distances:\n{short_distances_RU_UE}\n")
+            validation_log_file.write(f"- Channel gains summary: min={np.min(short_gain)}, max={np.max(short_gain)}\n")
+            
+            # Try multiple power allocation strategies if initial solution fails
+            power_scale_factors = [1.0, 0.9, 0.8, 0.7]
+            short_term_result = None
+            
+            for power_scale in power_scale_factors:
+                scaled_P_i = [p * power_scale for p in P_i] if isinstance(P_i, list) else P_i * power_scale
+                
+                short_term_result = solving.short_term(
+                    num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, scaled_P_i,
+                    short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
+                    logger=logger
+                )
+                
+                if not any(x is None for x in short_term_result):
+                    validation_log_file.write(f"\nFound feasible solution with {power_scale*100}% power allocation\n")
+                    break
+            
+            if any(x is None for x in short_term_result):
+                validation_log_file.write("\nShort-term solution failed with all power scaling attempts\n")
+                # Add detailed failure analysis code...
+                continue
+                
+            short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk = short_term_result
             
             # Validate short-term solution
             if short_pi_sk is not None:
                 valid_short_term, rates_short_term = validate_short_term_solution(
                     num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth,
                     P_i, short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
-                    short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk
+                    short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk,
+                    logger=validation_logger
                 )
                 validation_log_file.write(f"\nShort-term validation result: {'PASSED' if valid_short_term else 'FAILED'}\n")
                 for log in validation_logger.get_logs():
