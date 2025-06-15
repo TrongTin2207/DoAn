@@ -7,6 +7,7 @@ from fnmatch import fnmatch
 import shutil
 import os
 
+<<<<<<< Updated upstream
 def extract_values(array, dtype):
     shape = array.shape
     try:
@@ -24,6 +25,40 @@ def extract_values(array, dtype):
     except (AttributeError, TypeError):
         # If it's already a numpy array, just convert it
         return np.array(array, dtype=dtype)
+=======
+def extract_values(array, dtype=float):
+    """Extract values from an array of CVXPY variables or regular values."""
+    def get_value(x):
+        if isinstance(x, (int, float, np.number)):
+            return dtype(x)
+        if hasattr(x, 'value'):
+            return dtype(x.value) if x.value is not None else dtype(0)
+        return dtype(0)
+
+    if isinstance(array, (int, float, np.number)):
+        return dtype(array)
+
+    # Special handling for CVXPY Variable objects
+    if hasattr(array, 'value') and not isinstance(array, np.ndarray):
+        val = array.value
+        if val is None:
+            return dtype(0)
+        if isinstance(val, np.ndarray):
+            return np.array([get_value(x) for x in val.flatten()]).reshape(val.shape).astype(dtype)
+        return dtype(val)
+
+    # Handle numpy arrays
+    if isinstance(array, np.ndarray):
+        result = np.zeros(array.shape, dtype=dtype)
+        it = np.nditer(array, flags=['multi_index', 'refs_ok'])
+        for x in it:
+            idx = it.multi_index
+            result[idx] = get_value(array[idx])
+        return result
+
+    return dtype(array)
+
+>>>>>>> Stashed changes
 
 def extract_optimization_results(pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk):
     

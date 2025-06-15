@@ -203,18 +203,38 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
             logger.add(f"[solver] actual_solve {problem.status}")
 
         if problem.status == cp.OPTIMAL:
+<<<<<<< Updated upstream
             return (extract_values(short_pi_sk, int),
                     extract_values(short_z_ib_sk, int),
                     extract_values(short_p_ib_sk, float),
                     extract_values(short_mu_ib_sk, float),
                     short_total_R_sk.value)
         return short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk
+=======
+            try:
+                return (extract_values(short_pi_sk, int), 
+                       extract_values(short_z_ib_sk, int), 
+                       extract_values(short_p_ib_sk, float), 
+                       extract_values(short_mu_ib_sk, float), 
+                       float(short_total_R_sk.value))
+            except Exception as e:
+                if logger:
+                    logger.add(f"[short_term] Error extracting values: {e}")
+                return None, None, None, None, None
+                
+        return None, None, None, None, None
+>>>>>>> Stashed changes
 
     except cp.SolverError as e:
         if logger is None:
             print(f'Solver error: {e}')
         else:
             logger.add(f"[solver] ERROR: {e}")
+        return None, None, None, None, None
+    except Exception as e:
+        if logger:
+            logger.add(f"[short_term] ERROR: {e}")
+        print(f"Short-term optimization error: {e}")
         return None, None, None, None, None
 
 def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping, logger=None):
@@ -349,6 +369,7 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
         problem.solve(solver=SOLVER)
 
         if problem.status == cp.OPTIMAL:
+<<<<<<< Updated upstream
             return (extract_values(pi_sk, int), 
                 extract_values(z_ib_sk, int), 
                 extract_values(p_ib_sk, float),  
@@ -359,6 +380,39 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
                 total_R_sk.value)
         
         return pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk
+=======
+            try:
+                # Extract values with enhanced error handling
+                result = []
+                for var, dtype in [(pi_sk, int), (z_ib_sk, int), (p_ib_sk, float), 
+                                 (mu_ib_sk, float), (phi_i_sk, int), (phi_j_sk, int),
+                                 (phi_m_sk, int)]:
+                    try:
+                        val = extract_values(var, dtype)
+                        result.append(val)
+                    except Exception as e:
+                        if logger:
+                            logger.add(f"[long_term] Error extracting value: {str(e)}")
+                        return tuple([None] * 8)
+                
+                # Handle total_R_sk separately
+                try:
+                    total_R_sk_val = float(total_R_sk.value)
+                    result.append(total_R_sk_val)
+                except Exception as e:
+                    if logger:
+                        logger.add(f"[long_term] Error extracting total_R_sk: {str(e)}")
+                    return tuple([None] * 8)
+
+                return tuple(result)
+            except Exception as e:
+                if logger:
+                    logger.add(f"[long_term] Error in value extraction: {str(e)}")
+                    tb.print_exc()
+                return tuple([None] * 8)
+
+        return tuple([None] * 8)
+>>>>>>> Stashed changes
 
     except cp.SolverError:
         print('Solver error: non_feasible')

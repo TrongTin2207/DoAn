@@ -220,7 +220,7 @@ def main():
             max_possible_rate = np.sum([rb_bandwidth * np.log2(1 + np.max(gain) * P_i[0] / noise_power_watts) 
                                       for _ in range(num_RBs)])
             validation_log_file.write(f"- Maximum theoretically achievable rate: {max_possible_rate/1e6:.2f} Mbps\n")
-            validation_log_file.write(f"- Required minimum rate: {R_min/1e6:.2f} Mbps\n")
+            
             
             # Check resource constraints
             total_du_demand = np.sum([D_j[k] for k in range(num_UEs)])
