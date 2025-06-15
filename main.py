@@ -167,9 +167,10 @@ def main():
                 'ULLRC': float('inf')  # For high-priority traffic (>6 Mbps)
             }
             # Create and assign slices with more sophisticated logic
-            slice_names, R_min, D_j, D_m = gen_RU_UE.create_and_assign_slices_with_thresholds(
-                num_UEs, D_j_random_list, D_m_random_list, R_min_random_list, bandwidth_thresholds
+            slice_names, R_min_array, D_j, D_m = gen_RU_UE.create_and_assign_slices_with_thresholds(
+                num_UEs, D_j_random_list, D_m_random_list, R_min_random_list[:num_slices], bandwidth_thresholds
             )
+            R_min = R_min_array  # Use the array directly
             
             # Convert slice names to mapping matrix
             slice_mapping = np.zeros((num_slices, num_UEs), dtype=int)

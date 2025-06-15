@@ -2,7 +2,7 @@ import numpy as np
 import cvxpy as cp
 import time
 import traceback as tb
-
+from other_function import extract_values
 SOLVER = cp.MOSEK
 
 def optimize_power_efficiency(num_slices, num_UEs, num_RUs, num_RBs, P_i, rb_bandwidth, gain, R_min, z_ib_sk, logger=None):
@@ -139,11 +139,17 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
         for b in range(num_RBs):
             constraints.append(cp.sum([short_z_ib_sk[i, b, s, k] for s in range(num_slices) for k in range(num_UEs) for i in range(num_RUs)]) <= 1)
 
+        # Ensure R_min is properly formatted for slices
+        if not isinstance(R_min, (list, np.ndarray)) or len(R_min) < num_slices:
+            R_min = [R_min] * num_slices  # Use same R_min for all slices if not provided per slice
+        
         # QoS constraint with improved power efficiency
         for s in range(num_slices):
             for k in range(num_UEs):
-                R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * short_mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
-                constraints.append(R_sk >= R_min * short_pi_sk[s, k])
+                if arr_pi_sk[s, k] == 1:  # Only apply constraint when UE is allocated
+                    R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * short_mu_ib_sk[i, b, s, k] 
+                                 for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
+                    constraints.append(R_sk >= R_min[s])
 
         # Power constraint per RU (use 80% for conservative allocation)
         for i in range(num_RUs):
@@ -197,8 +203,11 @@ def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R
             logger.add(f"[solver] actual_solve {problem.status}")
 
         if problem.status == cp.OPTIMAL:
-            return short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk
-                
+            return (extract_values(short_pi_sk, int),
+                    extract_values(short_z_ib_sk, int),
+                    extract_values(short_p_ib_sk, float),
+                    extract_values(short_mu_ib_sk, float),
+                    short_total_R_sk.value)
         return short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk
 
     except cp.SolverError as e:
@@ -340,7 +349,14 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
         problem.solve(solver=SOLVER)
 
         if problem.status == cp.OPTIMAL:
-            return pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk
+            return (extract_values(pi_sk, int), 
+                extract_values(z_ib_sk, int), 
+                extract_values(p_ib_sk, float),  
+                extract_values(mu_ib_sk, float),  
+                extract_values(phi_i_sk, int),  
+                extract_values(phi_j_sk, int),  
+                extract_values(phi_m_sk, int), 
+                total_R_sk.value)
         
         return pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk
 
