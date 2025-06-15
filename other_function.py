@@ -7,12 +7,14 @@ from fnmatch import fnmatch
 import shutil
 import os
 
-def extract_optimization_results(pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk):
-    def extract_values(array, dtype):
+def extract_values(array, dtype):
         shape = array.shape
         flat_array = np.array([x.value for x in array.flatten()], dtype=dtype)
         return flat_array.reshape(shape)
 
+
+def extract_optimization_results(pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk):
+    
     arr_pi_sk = extract_values(pi_sk, int)
     arr_z_ib_sk = extract_values(z_ib_sk, int)
     arr_p_ib_sk = extract_values(p_ib_sk, float)
