@@ -6,59 +6,41 @@ import time
 from fnmatch import fnmatch
 import shutil
 import os
+import cvxpy as cp
 
-<<<<<<< Updated upstream
-def extract_values(array, dtype):
-    shape = array.shape
-    try:
-        # Try multiple ways to get values based on variable type
-        def get_value(x):
-            if hasattr(x, 'X'):  # Gurobi variable
-                return x.X
-            elif hasattr(x, 'value'):  # CVXPY variable
-                return x.value
-            else:  # Direct value (numpy array or number)
-                return x
-        
-        flat_array = np.array([get_value(x) for x in array.flatten()], dtype=dtype)
-        return flat_array.reshape(shape)
-    except (AttributeError, TypeError):
-        # If it's already a numpy array, just convert it
-        return np.array(array, dtype=dtype)
-=======
 def extract_values(array, dtype=float):
-    """Extract values from an array of CVXPY variables or regular values."""
-    def get_value(x):
+    """Extract values from CVXPY variables or arrays safely"""
+    
+    def process_value(x):
+        if hasattr(x, 'value'):
+            val = x.value
+            if val is None:
+                return dtype(0)
+            if isinstance(val, np.ndarray):
+                return val.astype(dtype)
+            return dtype(val)
         if isinstance(x, (int, float, np.number)):
             return dtype(x)
-        if hasattr(x, 'value'):
-            return dtype(x.value) if x.value is not None else dtype(0)
         return dtype(0)
 
-    if isinstance(array, (int, float, np.number)):
-        return dtype(array)
-
-    # Special handling for CVXPY Variable objects
-    if hasattr(array, 'value') and not isinstance(array, np.ndarray):
+    # Handle CVXPY Variable directly
+    if hasattr(array, 'value'):
         val = array.value
         if val is None:
             return dtype(0)
         if isinstance(val, np.ndarray):
-            return np.array([get_value(x) for x in val.flatten()]).reshape(val.shape).astype(dtype)
+            return val.astype(dtype)
         return dtype(val)
 
     # Handle numpy arrays
     if isinstance(array, np.ndarray):
         result = np.zeros(array.shape, dtype=dtype)
-        it = np.nditer(array, flags=['multi_index', 'refs_ok'])
-        for x in it:
-            idx = it.multi_index
-            result[idx] = get_value(array[idx])
+        for idx in np.ndindex(array.shape):
+            result[idx] = process_value(array[idx])
         return result
 
-    return dtype(array)
-
->>>>>>> Stashed changes
+    # Handle scalar values
+    return process_value(array)
 
 def extract_optimization_results(pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk):
     
