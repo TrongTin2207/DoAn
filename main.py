@@ -190,6 +190,19 @@ def main():
             (gain)
         )
 
+        # Latency parameters based on formulas
+        max_latency = 1.0  # Maximum end-to-end latency in ms
+        L_cu = 0.02  # CU processing latency in ms
+        L_du = 0.05  # DU processing latency in ms
+
+        # Parameters for each slice (eMBB and URLLC)
+        rho_du = [0.8, 0.7]  # Traffic intensity for each slice type
+        mu_s = [100, 80]     # Service rate (packets/ms)
+        lambda_s = [80, 60]  # Arrival rate (packets/ms)
+
+        # Initialize distance matrix
+        d_sk = np.zeros((num_slices, num_UEs))
+
         # Long-term solution: solve global optimization
         validation_log_file.write("\n===== LONG-TERM SOLUTION VALIDATION =====\n")
         validation_log_file.write(f"Network Parameters:\n")
@@ -208,7 +221,15 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, 
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            logger=logger  # Pass logger to get solver messages
+            c=speed_of_light_km_ms,  # Speed of light for propagation delay
+            d_sk=distances_RU_UE.mean(axis=0),  # Average distance matrix
+            max_latency=max_latency,
+            L_cu=L_cu,
+            L_du=L_du, 
+            rho_du=rho_du,
+            mu_s=mu_s,
+            lambda_s=lambda_s,
+            logger=logger
         )
 
         # Check if any results are None before unpacking
@@ -322,8 +343,16 @@ def main():
                 scaled_P_i = [p * power_scale for p in P_i] if isinstance(P_i, list) else P_i * power_scale
                 
                 short_term_result = solving.short_term(
-                    num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, scaled_P_i,
+                    num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i,
                     short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
+                    c=speed_of_light_km_ms,
+                    d_sk=short_distances_RU_UE.mean(axis=0),
+                    max_latency=max_latency,
+                    L_cu=L_cu,
+                    L_du=L_du,
+                    rho_du=rho_du,
+                    mu_s=mu_s,
+                    lambda_s=lambda_s,
                     logger=logger
                 )
                 
