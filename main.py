@@ -167,9 +167,10 @@ def main():
                 'ULLRC': float('inf')  # For high-priority traffic (>6 Mbps)
             }
             # Create and assign slices with more sophisticated logic
-            slice_names, R_min, D_j, D_m = gen_RU_UE.create_and_assign_slices_with_thresholds(
-                num_UEs, D_j_random_list, D_m_random_list, R_min_random_list, bandwidth_thresholds
+            slice_names, R_min_array, D_j, D_m = gen_RU_UE.create_and_assign_slices_with_thresholds(
+                num_UEs, D_j_random_list, D_m_random_list, R_min_random_list[:num_slices], bandwidth_thresholds
             )
+            R_min = R_min_array  # Use the array directly
             
             # Convert slice names to mapping matrix
             slice_mapping = np.zeros((num_slices, num_UEs), dtype=int)
@@ -189,6 +190,19 @@ def main():
             (gain)
         )
 
+        # Latency parameters based on formulas
+        max_latency = 1.0  # Maximum end-to-end latency in ms
+        L_cu = 0.02  # CU processing latency in ms
+        L_du = 0.05  # DU processing latency in ms
+
+        # Parameters for each slice (eMBB and URLLC)
+        rho_du = [0.8, 0.7]  # Traffic intensity for each slice type
+        mu_s = [100, 80]     # Service rate (packets/ms)
+        lambda_s = [80, 60]  # Arrival rate (packets/ms)
+
+        # Initialize distance matrix
+        d_sk = np.zeros((num_slices, num_UEs))
+
         # Long-term solution: solve global optimization
         validation_log_file.write("\n===== LONG-TERM SOLUTION VALIDATION =====\n")
         validation_log_file.write(f"Network Parameters:\n")
@@ -207,7 +221,15 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, 
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            logger=logger  # Pass logger to get solver messages
+            c=speed_of_light_km_ms,  # Speed of light for propagation delay
+            d_sk=distances_RU_UE.mean(axis=0),  # Average distance matrix
+            max_latency=max_latency,
+            L_cu=L_cu,
+            L_du=L_du, 
+            rho_du=rho_du,
+            mu_s=mu_s,
+            lambda_s=lambda_s,
+            logger=logger
         )
 
         # Check if any results are None before unpacking
@@ -219,7 +241,7 @@ def main():
             max_possible_rate = np.sum([rb_bandwidth * np.log2(1 + np.max(gain) * P_i[0] / noise_power_watts) 
                                       for _ in range(num_RBs)])
             validation_log_file.write(f"- Maximum theoretically achievable rate: {max_possible_rate/1e6:.2f} Mbps\n")
-            validation_log_file.write(f"- Required minimum rate: {R_min/1e6:.2f} Mbps\n")
+            
             
             # Check resource constraints
             total_du_demand = np.sum([D_j[k] for k in range(num_UEs)])
@@ -241,13 +263,13 @@ def main():
             continue
 
         pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk = long_term_result
-        
+
         # Check solution and save results
         if (pi_sk is None):
             logger.add(f"[solve] Frame {f+1}: No feasible solution found!")
             validation_log_file.write("No feasible long-term solution found.\n")
             continue
-        print(pi_sk)
+        
         # Validate long-term solution
         valid_long_term, rates_long_term = validate_long_term_solution(
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
@@ -321,8 +343,16 @@ def main():
                 scaled_P_i = [p * power_scale for p in P_i] if isinstance(P_i, list) else P_i * power_scale
                 
                 short_term_result = solving.short_term(
-                    num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, scaled_P_i,
+                    num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i,
                     short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
+                    c=speed_of_light_km_ms,
+                    d_sk=short_distances_RU_UE.mean(axis=0),
+                    max_latency=max_latency,
+                    L_cu=L_cu,
+                    L_du=L_du,
+                    rho_du=rho_du,
+                    mu_s=mu_s,
+                    lambda_s=lambda_s,
                     logger=logger
                 )
                 
@@ -351,23 +381,7 @@ def main():
                 validation_logger.logs = []  # Clear logs for next validation
             else:
                 validation_log_file.write("No feasible short-term solution found.\n")
-
-            """
-            # Validate latency constraints
-            if short_pi_sk is not None:
-                valid_latency = validate_latency_constraints(num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
-                                                            short_z_ib_sk, short_total_R_sk,arr_phi_j_sk, arr_phi_m_sk,
-                                                            short_pi_sk, c = , d_sk = , max_latency=, L_cu=, L_du=, rho_du=, 
-                                                            mu_s=, lambda_s=,
-                                                            logger=validation_logger
-                                                            )
-                validation_log_file.write(f"\nLatency validation result: {'PASSED' if valid_latency else 'FAILED'}\n")
-                for log in validation_logger.get_logs():
-                    validation_log_file.write(f"{log}\n")
-                validation_log_file = []
-            else :
-                validation_log_file.write("No feasible solution found to satisfy latency constraints.\n")
-            """
+            
             # Save short-term results
             other_function.save_object(
                 f"{filename_solution}_shortterm_f{f}_t{t}.pkl.gz",
