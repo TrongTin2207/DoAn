@@ -227,6 +227,8 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     
     # 6. Validate latency constraints if parameters are provided
     latency_constraint_valid = True
+    for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]:
+        print(f"{param}\n")
     if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
         logger.add("Validating latency constraints...")
         # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)

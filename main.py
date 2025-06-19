@@ -276,6 +276,8 @@ def main():
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
             pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk,
+            c = speed_of_light_km_ms, d_sk = d_sk, max_latency = max_latency, L_cu = L_cu, L_du = L_du,
+            rho_du = rho_du, mu_s = mu_s, lambda_s = lambda_s,
             logger=validation_logger
         )
         validation_log_file.write(f"\nLong-term validation result: {'PASSED' if valid_long_term else 'FAILED'}\n")
@@ -373,6 +375,9 @@ def main():
                     num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth,
                     P_i, short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
                     short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk,
+                    c = speed_of_light_km_ms, d_sk = d_sk, max_latency = max_latency, 
+                    L_cu = L_cu, L_du = L_du,
+                    rho_du = rho_du, mu_s = mu_s, lambda_s = lambda_s,
                     logger=validation_logger
                 )
                 validation_log_file.write(f"\nShort-term validation result: {'PASSED' if valid_short_term else 'FAILED'}\n")
