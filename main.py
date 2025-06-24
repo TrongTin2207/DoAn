@@ -8,6 +8,7 @@ import datetime
 import os
 import matplotlib.pyplot as plt
 from validate import validate_long_term_solution, validate_short_term_solution, ValidationLogger, validate_latency_constraints
+from rb_plotting import plot_rb_assignments, plot_rb_efficiency_metrics
 
 # =======================================================
 # ============== Tham số mô phỏng =======================
@@ -284,6 +285,23 @@ def main():
         for log in validation_logger.get_logs():
             validation_log_file.write(f"{log}\n")
         validation_logger.logs = []  # Clear logs for next validation
+        
+        # Long-term solution plotting
+        logger.add(f"[solve] Frame {f+1}: Creating long-term RB assignment plots")
+        try:
+            plot_rb_assignments(
+                z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
+                frame_num=f+1, save_path=SAVE_PATH, show_plot=False, save_plot=True
+            )
+            
+            plot_rb_efficiency_metrics(
+                z_ib_sk, p_ib_sk, gain, total_R_sk, num_slices, num_UEs, 
+                num_RUs, num_RBs, slices, rb_bandwidth, frame_num=f+1,
+                save_path=SAVE_PATH, show_plot=False, save_plot=True
+            )
+            logger.add(f"[solve] Frame {f+1}: Long-term plots saved successfully")
+        except Exception as e:
+            logger.add(f"[solve] Frame {f+1}: Error creating long-term plots: {str(e)}")
             
         logger.add(f"[solve] Solve frame {f+1} of {num_frame}: Long-term save")
         other_function.save_object(
@@ -384,6 +402,25 @@ def main():
                 for log in validation_logger.get_logs():
                     validation_log_file.write(f"{log}\n")
                 validation_logger.logs = []  # Clear logs for next validation
+                
+                # Short-term solution plotting
+                logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Creating short-term RB assignment plots")
+                try:
+                    plot_rb_assignments(
+                        short_z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
+                        frame_num=f+1, time_slot=t+1, save_path=SAVE_PATH, 
+                        show_plot=False, save_plot=True
+                    )
+                    
+                    plot_rb_efficiency_metrics(
+                        short_z_ib_sk, short_p_ib_sk, short_gain, short_total_R_sk, 
+                        num_slices, num_UEs, num_RUs, num_RBs, slices, rb_bandwidth, 
+                        frame_num=f+1, time_slot=t+1, save_path=SAVE_PATH, 
+                        show_plot=False, save_plot=True
+                    )
+                    logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Short-term plots saved successfully")
+                except Exception as e:
+                    logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Error creating short-term plots: {str(e)}")
             else:
                 validation_log_file.write("No feasible short-term solution found.\n")
             
