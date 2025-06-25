@@ -1,0 +1,20 @@
+- Error 1 : Warning: Latency constraint calculation failed: tuple index out of range
+    Chú ý dòng 226 main.py : 
+    d_sk=distances_RU_UE.mean(axis=0),  # Average distance matrix
+    # Cần xem lại cách tính toán d_sk từ ma trận 2 chiều thành ma trận một chiều ? 
+    
+- Error 2 : mu = z * p constraint validated: False
+    Chú ý lỗi số thực trong điều kiện khi trừ hai số thực, tôi thử nhiều lần thì không bị, 
+    tôi nghĩ nên tăng ngưỡng lên (không biết nữa)
+    xét debug ở dòng 385 - 403 validate.py
+
+- Error 3 : Error creating long-term plots: invalid index to scalar variable.
+    Chú ý total_R_sk là int, không truy cập giống mảng 2D được
+    dòng 178 rb_plotting.py : 
+    rates_per_slice = [np.sum(total_R_sk[s, :]) for s in range(num_slices)]
+    # Chú ý total_R_sk là int, không thể thực hiện theo cách này
+
+- Error 4 : Constraint violation: RB 2 is allocated to more than one UE (sum = 2.0000)
+    Nó phụ thuộc vào kết quả giải chứ cách kiểm tra không lỗi, nên xem thử kết quả giải và điều kiện,
+    chứ tôi thử thì không bị lỗi này, check debug ở dòng 647 validate.py
+    if total_z > 1 + 1e-6:

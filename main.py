@@ -8,6 +8,7 @@ import datetime
 import os
 import matplotlib.pyplot as plt
 from validate import validate_long_term_solution, validate_short_term_solution, ValidationLogger, validate_latency_constraints
+from rb_plotting import plot_rb_assignments, plot_rb_efficiency_metrics
 
 # =======================================================
 # ============== Tham số mô phỏng =======================
@@ -223,6 +224,7 @@ def main():
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
             c=speed_of_light_km_ms,  # Speed of light for propagation delay
             d_sk=distances_RU_UE.mean(axis=0),  # Average distance matrix
+            # Cần xem lại cách tính toán d_sk từ ma trận 2 chiều thành ma trận một chiều ?
             max_latency=max_latency,
             L_cu=L_cu,
             L_du=L_du, 
@@ -284,6 +286,23 @@ def main():
         for log in validation_logger.get_logs():
             validation_log_file.write(f"{log}\n")
         validation_logger.logs = []  # Clear logs for next validation
+        
+        # Long-term solution plotting
+        logger.add(f"[solve] Frame {f+1}: Creating long-term RB assignment plots")
+        try:
+            plot_rb_assignments(
+                z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
+                frame_num=f+1, save_path=SAVE_PATH, show_plot=False, save_plot=True
+            )
+            
+            plot_rb_efficiency_metrics(
+                z_ib_sk, p_ib_sk, gain, total_R_sk, num_slices, num_UEs, 
+                num_RUs, num_RBs, slices, rb_bandwidth, frame_num=f+1,
+                save_path=SAVE_PATH, show_plot=False, save_plot=True
+            )
+            logger.add(f"[solve] Frame {f+1}: Long-term plots saved successfully")
+        except Exception as e:
+            logger.add(f"[solve] Frame {f+1}: Error creating long-term plots: {str(e)}")
             
         logger.add(f"[solve] Solve frame {f+1} of {num_frame}: Long-term save")
         other_function.save_object(
@@ -384,6 +403,25 @@ def main():
                 for log in validation_logger.get_logs():
                     validation_log_file.write(f"{log}\n")
                 validation_logger.logs = []  # Clear logs for next validation
+                
+                # Short-term solution plotting
+                logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Creating short-term RB assignment plots")
+                try:
+                    plot_rb_assignments(
+                        short_z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
+                        frame_num=f+1, time_slot=t+1, save_path=SAVE_PATH, 
+                        show_plot=False, save_plot=True
+                    )
+                    
+                    plot_rb_efficiency_metrics(
+                        short_z_ib_sk, short_p_ib_sk, short_gain, short_total_R_sk, 
+                        num_slices, num_UEs, num_RUs, num_RBs, slices, rb_bandwidth, 
+                        frame_num=f+1, time_slot=t+1, save_path=SAVE_PATH, 
+                        show_plot=False, save_plot=True
+                    )
+                    logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Short-term plots saved successfully")
+                except Exception as e:
+                    logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Error creating short-term plots: {str(e)}")
             else:
                 validation_log_file.write("No feasible short-term solution found.\n")
             
@@ -393,6 +431,65 @@ def main():
                 (short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk)
             )
 
+        # --- RANDOM BASELINE SOLUTION ---
+        logger.add(f"[solve] Frame {f+1}: Random baseline solution")
+        random_result = solving.random_ru_solution(
+            num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
+            P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
+            l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
+            c=speed_of_light_km_ms, d_sk=distances_RU_UE.mean(axis=0),
+            max_latency=max_latency, L_cu=L_cu, L_du=L_du,
+            rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s, logger=logger
+        )
+        # Defensive: check for None in arrays robustly
+        if random_result is None or not isinstance(random_result, (list, tuple)) or len(random_result) < 8:
+            logger.add(f"[solve] Frame {f+1}: No feasible random solution found!")
+            validation_log_file.write("No feasible random solution found.\n")
+        elif any((x is None) or (isinstance(x, np.ndarray) and x.dtype == object and np.any([xi is None for xi in x.flatten()])) for x in random_result):
+            logger.add(f"[solve] Frame {f+1}: No feasible random solution found!")
+            validation_log_file.write("No feasible random solution found.\n")
+        else:
+            random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk = random_result
+            # Validate random solution
+            try:
+                valid_random, rates_random = validate_long_term_solution(
+                    num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
+                    P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
+                    l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
+                    random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, random_phi_i_sk, random_phi_j_sk, random_phi_m_sk,
+                    c=speed_of_light_km_ms, d_sk=d_sk, max_latency=max_latency, L_cu=L_cu, L_du=L_du,
+                    rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s, logger=validation_logger
+                )
+            except Exception as e:
+                valid_random, rates_random = False, None
+                logger.add(f"[solve] Frame {f+1}: Error in random solution validation: {str(e)}")
+                validation_log_file.write(f"Random solution validation error: {str(e)}\n")
+            validation_log_file.write(f"\nRandom solution validation result: {'PASSED' if valid_random else 'FAILED'}\n")
+            for log in validation_logger.get_logs():
+                validation_log_file.write(f"{log}\n")
+            validation_logger.logs = []
+            # Plot random solution
+            logger.add(f"[solve] Frame {f+1}: Creating random RB assignment plots")
+            try:
+                plot_rb_assignments(
+                    random_z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
+                    frame_num=f+1, save_path=SAVE_PATH, show_plot=False, save_plot=True
+                )
+                plot_rb_efficiency_metrics(
+                    random_z_ib_sk, random_p_ib_sk, gain, random_total_R_sk, num_slices, num_UEs,
+                    num_RUs, num_RBs, slices, rb_bandwidth, frame_num=f+1,
+                    save_path=SAVE_PATH, show_plot=False, save_plot=True
+                )
+
+            except Exception as e:
+                logger.add(f"[solve] Frame {f+1}: Error creating random plots: {str(e)}")
+                validation_log_file.write(f"Error creating random plots: {str(e)}\n")
+            # Save random solution results
+            other_function.save_object(
+                f"{filename_solution}_random_f{f}.pkl.gz",
+                (random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk)
+            )
+        
         # Adjust number of UEs for next frame (with random variation)
         num_UEs = max(num_UEs + np.random.randint(-delta_num_UE, delta_num_UE), 1)
         logger.add(f"[solve] Frame {f+1} completed. Next frame will have {num_UEs} UEs.")
