@@ -3,6 +3,7 @@ import cvxpy as cp
 import time
 import traceback as tb
 from other_function import extract_values
+import random
 SOLVER = cp.MOSEK
 
 def optimize_power_efficiency(num_slices, num_UEs, num_RUs, num_RBs, P_i, rb_bandwidth, gain, R_min, z_ib_sk, logger=None):
@@ -877,3 +878,129 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
     except Exception as e:
         print(f'An error occurred: {e}')
         return None, None, None, None, None, None, None, None
+    
+SOLVER = cp.MOSEK
+
+def random_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_bandwidth, 
+                       D_j, D_m, R_min, gain, A_j, A_m, l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
+                       c=None, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None,
+                       logger=None):
+    """
+    Random-RU solution implementation following the paper's constraints.
+    Randomly assigns RUs to UEs, RBs to UEs, and distributes power evenly per RB.
+    Enforces all mapping and assignment constraints.
+    """
+    try:
+        # 1. Random RU assignment (phi_i_sk): for each (s, k), assign one RU only if slice_mapping[s, k] == 1
+        phi_i_sk = np.zeros((num_RUs, num_slices, num_UEs))
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if slice_mapping[s, k] == 1:
+                    i = np.random.choice(num_RUs)
+                    phi_i_sk[i, s, k] = 1
+
+        # 2. Random RB assignment (z_ib_sk): for each (i, b), assign at most one (s, k) where phi_i_sk[i, s, k] == 1 and slice_mapping[s, k] == 1
+        z_ib_sk = np.zeros((num_RUs, num_RBs, num_slices, num_UEs))
+        for i in range(num_RUs):
+            for b in range(num_RBs):
+                # With 50% chance, leave RB unused
+                if np.random.rand() < 0.5:
+                    continue
+                # Only assign to valid (s, k)
+                valid_pairs = [(s, k) for s in range(num_slices) for k in range(num_UEs)
+                              if phi_i_sk[i, s, k] == 1 and slice_mapping[s, k] == 1]
+                if not valid_pairs:
+                    continue
+                s, k = valid_pairs[np.random.randint(len(valid_pairs))]
+                z_ib_sk[i, b, s, k] = 1
+
+        # 3. Power allocation: P_i / |B| for each assigned RB
+        p_ib_sk = np.zeros_like(z_ib_sk)
+        for i in range(num_RUs):
+            for b in range(num_RBs):
+                for s in range(num_slices):
+                    for k in range(num_UEs):
+                        if z_ib_sk[i, b, s, k] == 1:
+                            p_ib_sk[i, b, s, k] = P_i[i] / num_RBs
+
+        # 4. mu_ib_sk = z * p
+        mu_ib_sk = z_ib_sk * p_ib_sk
+
+        # 5. pi_sk: UE is served if it is assigned any RB and slice_mapping[s, k] == 1
+        pi_sk = np.zeros((num_slices, num_UEs))
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if slice_mapping[s, k] == 1 and np.any(z_ib_sk[:, :, s, k] == 1):
+                    pi_sk[s, k] = 1
+
+        # 6. Random DU/CU assignment (phi_j_sk, phi_m_sk) for each (s, k) where pi_sk[s, k] == 1
+        phi_j_sk = np.zeros((num_DUs, num_slices, num_UEs))
+        phi_m_sk = np.zeros((num_CUs, num_slices, num_UEs))
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if pi_sk[s, k] == 1:
+                    j = np.random.choice(num_DUs)
+                    m = np.random.choice(num_CUs)
+                    phi_j_sk[j, s, k] = 1
+                    phi_m_sk[m, s, k] = 1
+
+        # 7. Calculate total_R_sk (rate per (s, k))
+        total_R_sk = np.zeros((num_slices, num_UEs))
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if pi_sk[s, k] == 1:
+                    rate = 0
+                    for i in range(num_RUs):
+                        for b in range(num_RBs):
+                            if z_ib_sk[i, b, s, k] == 1:
+                                snr = gain[i, b, s, k] * p_ib_sk[i, b, s, k]
+                                rate += rb_bandwidth * np.log2(1 + snr)
+                    total_R_sk[s, k] = rate
+
+        # 8. Enforce rate constraint: if rate < R_min[k], set pi_sk[s, k] = 0 and zero out assignments
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if pi_sk[s, k] == 1 and total_R_sk[s, k] < R_min[k]:
+                    pi_sk[s, k] = 0
+                    z_ib_sk[:, :, s, k] = 0
+                    p_ib_sk[:, :, s, k] = 0
+                    mu_ib_sk[:, :, s, k] = 0
+                    phi_j_sk[:, s, k] = 0
+                    phi_m_sk[:, s, k] = 0
+                    total_R_sk[s, k] = 0
+
+        # 9. Optionally, check constraints and latency (if required)
+        if max_latency is not None and c is not None and d_sk is not None and L_cu is not None and L_du is not None and rho_du is not None and mu_s is not None and lambda_s is not None:
+            try:
+                # Defensive: ensure d_sk is array of correct shape
+                if isinstance(d_sk, (int, float)):
+                    d_sk = np.full((num_slices, num_UEs), d_sk)
+                elif isinstance(d_sk, (list, tuple)):
+                    d_sk = np.array(d_sk)
+                    if d_sk.shape != (num_slices, num_UEs):
+                        d_sk = np.broadcast_to(d_sk, (num_slices, num_UEs))
+                constraints = []
+                latency = calculate_latency_components(z_ib_sk, total_R_sk, phi_j_sk, phi_m_sk, c, d_sk, L_cu, L_du, rho_du, mu_s, lambda_s, constraints)
+                if latency is not None and hasattr(latency, 'value'):
+                    latency_val = latency.value if hasattr(latency, 'value') else latency
+                    if logger:
+                        logger.add(f"[random_ru] Calculated latency: {latency_val}")
+                    if latency_val > max_latency:
+                        if logger:
+                            logger.add(f"[random_ru] Latency constraint violated: {latency_val} > {max_latency}")
+            except Exception as e:
+                if logger:
+                    logger.add(f"[random_ru] Latency constraint calculation failed: {e}")
+
+        if logger:
+            logger.add(f"[random_ru] Random-RU solution completed with total rate: {np.sum(total_R_sk):.2f}")
+
+        return (pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk)
+
+    except Exception as e:
+        if logger:
+            logger.add(f"[random_ru] ERROR: {e}")
+        else:
+            print(f'Random-RU error: {e}')
+        return None, None, None, None, None, None, None, None
+

@@ -155,13 +155,13 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
                     z_val = z_ib_sk_val[i, b, s, k]
                     p_val = p_ib_sk_val[i, b, s, k]
                     mu_val = mu_ib_sk_val[i, b, s, k]
-                    
+                    # Use a slightly larger tolerance for numerical errors
                     if z_val < 0.5:  # z is 0 (using 0.5 as threshold for binary variables)
-                        if mu_val > 1e-6:  # mu should be 0
-                            logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} when z = {z_val:.1f}")
+                        if abs(mu_val) > 1e-4 or abs(p_val) > 1e-4:  # mu and p should be 0
+                            logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f}, p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
                     else:  # z is 1
-                        if abs(mu_val - p_val) > 1e-6:  # mu should equal p
+                        if abs(mu_val - p_val) > 1e-4:  # mu should equal p
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} not equal to p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
     
@@ -227,8 +227,6 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     
     # 6. Validate latency constraints if parameters are provided
     latency_constraint_valid = True
-    for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]:
-        print(f"{param}\n")
     if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
         logger.add("Validating latency constraints...")
         # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)
@@ -262,7 +260,43 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     total_rate = np.sum(R_sk_val)
     logger.add(f"Total data rate: {total_rate:.4f}")
     
-    all_valid = rb_allocation_valid and power_allocation_valid and mu_constraint_valid and rate_constraint_valid and pi_sk_match #and latency_constraint_valid
+    # Add validation for power efficiency
+    power_efficiency_valid = True
+    for i in range(num_RUs):
+        total_power = 0
+        for b in range(num_RBs):
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    total_power += mu_ib_sk_val[i, b, s, k]
+        power_efficiency = total_power / P_i[i] if isinstance(P_i, (list, np.ndarray)) else total_power / P_i
+        if power_efficiency > 0.9:  # Check if using more than 90% of available power
+            logger.add(f"Warning: RU {i} using {power_efficiency*100:.1f}% of available power")
+            power_efficiency_valid = False
+    
+    logger.add(f"Power efficiency validated: {power_efficiency_valid}")
+
+    # Add validation for interference levels
+    interference_valid = True
+    for b in range(num_RBs):
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                if arr_pi_sk[s, k] > 0:  # Only check active UEs
+                    interference = 0
+                    signal = 0
+                    for i in range(num_RUs):
+                        if z_ib_sk_val[i, b, s, k] > 0.5:
+                            signal = gain[i, b, s, k] * mu_ib_sk_val[i, b, s, k]
+                        else:
+                            interference += gain[i, b, s, k] * mu_ib_sk_val[i, b, s, k]
+                    if signal > 0 and interference/signal > 0.1:  # Check if interference is more than 10% of signal
+                        logger.add(f"Warning: High interference for UE ({s},{k}) on RB {b}: {interference/signal*100:.1f}%")
+                        interference_valid = False
+    
+    logger.add(f"Interference levels validated: {interference_valid}")
+
+    all_valid = (rb_allocation_valid and power_allocation_valid and mu_constraint_valid and 
+                rate_constraint_valid and power_efficiency_valid and interference_valid)
+
     logger.add(f"\nAll constraints validated: {all_valid}")
     
     return all_valid, R_sk_val
@@ -354,13 +388,13 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
                     z_val = z_ib_sk_val[i, b, s, k]
                     p_val = p_ib_sk_val[i, b, s, k]
                     mu_val = mu_ib_sk_val[i, b, s, k]
-                    
+                    # Use a slightly larger tolerance for numerical errors
                     if z_val < 0.5:  # z is 0 (using 0.5 as threshold for binary variables)
-                        if mu_val > 1e-6:  # mu should be 0
-                            logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} when z = {z_val:.1f}")
+                        if abs(mu_val) > 1e-4 or abs(p_val) > 1e-4:  # mu and p should be 0
+                            logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f}, p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
                     else:  # z is 1
-                        if abs(mu_val - p_val) > 1e-6:  # mu should equal p
+                        if abs(mu_val - p_val) > 1e-4:  # mu should equal p
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} not equal to p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
     
@@ -547,19 +581,9 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
     logger.add(f"Latency constraint validated: {latency_constraint_valid}")
 
     # 13. Check eMBB data rate upper bound if applicable
+    # NOTE: eMBB should only have a lower bound, not an upper bound. Remove this check.
     embb_rate_valid = True
-    if max_latency is not None:  # If latency constraints are used, check eMBB bounds
-        for s in range(num_slices):
-            for k in range(num_UEs):
-                if pi_sk_val[s, k] > 0.5:  # UE is selected
-                    # Assuming slice 1 is eMBB (you may need to adjust this based on your slice definitions)
-                    if s == 1:  # eMBB slice
-                        embb_max_rate = 0.25  # 0.25ms as mentioned in your code
-                        if R_sk_val[s, k] > embb_max_rate + 1e-6:
-                            logger.add(f"eMBB rate violation: UE ({s},{k}) rate {R_sk_val[s, k]:.4f} > max {embb_max_rate}")
-                            embb_rate_valid = False
-    
-    logger.add(f"eMBB rate upper bound validated: {embb_rate_valid}")
+    # (Removed upper bound check)
     
     # 14. Calculate and display objective value
     served_UEs = np.sum(pi_sk_val)
@@ -644,13 +668,13 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
                     z_val = z_ib_sk_val[i, b, s, k]
                     p_val = p_ib_sk_val[i, b, s, k]
                     mu_val = mu_ib_sk_val[i, b, s, k]
-                    
+                    # Use a slightly larger tolerance for numerical errors
                     if z_val < 0.5:  # z is 0 (using 0.5 as threshold for binary variables)
-                        if mu_val > 1e-6:  # mu should be 0
-                            logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} when z = {z_val:.1f}")
+                        if abs(mu_val) > 1e-4 or abs(p_val) > 1e-4:  # mu and p should be 0
+                            logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f}, p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
                     else:  # z is 1
-                        if abs(mu_val - p_val) > 1e-6:  # mu should equal p
+                        if abs(mu_val - p_val) > 1e-4:  # mu should equal p
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} not equal to p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
     

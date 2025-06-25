@@ -7,6 +7,15 @@ import os
 def plot_rb_assignments(z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices, 
                        frame_num=None, time_slot=None, save_path="./result", 
                        show_plot=True, save_plot=True):
+    # --- Defensive shape checks ---
+    z_shape = z_ib_sk.shape
+    if len(z_shape) != 4:
+        raise ValueError(f"z_ib_sk must be 4D (RU, RB, slice, UE), got shape {z_shape}")
+    num_RUs, num_RBs, num_slices_z, num_UEs_z = z_shape
+    # Clip to min of provided and expected
+    num_slices = min(num_slices, num_slices_z)
+    num_UEs = min(num_UEs, num_UEs_z)
+    
     # Create figure with subplots
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
     
@@ -31,7 +40,8 @@ def plot_rb_assignments(z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
     
     for s in range(num_slices):
         for b in range(num_RBs):
-            rb_usage_per_slice[s, b] = np.sum(z_ib_sk[:, b, s, :])
+            if s < num_slices_z:
+                rb_usage_per_slice[s, b] = np.sum(z_ib_sk[:, b, s, :num_UEs])
     
     im1 = ax1.imshow(rb_usage_per_slice, cmap='YlOrRd', aspect='auto')
     ax1.set_title('RB Usage per Slice', fontweight='bold')
@@ -48,8 +58,9 @@ def plot_rb_assignments(z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
     for k in range(num_UEs):
         for b in range(num_RBs):
             for s in range(num_slices):
-                if z_ib_sk[0, b, s, k] > 0:  # Using first RU as example
-                    user_rb_matrix[k, b] = s + 1  # Color by slice type
+                if s < num_slices_z and k < num_UEs_z:
+                    if z_ib_sk[0, b, s, k] > 0:
+                        user_rb_matrix[k, b] = s + 1  # Color by slice type
     
     im2 = ax2.imshow(user_rb_matrix, cmap='tab10', aspect='auto', vmin=0, vmax=num_slices)
     ax2.set_title('User-RB Assignment (RU 0)', fontweight='bold')
