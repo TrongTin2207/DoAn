@@ -31,8 +31,8 @@ def plot_rb_assignments(z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
     fig.suptitle(title, fontsize=16, fontweight='bold')
     
     # Color maps for different slices
-    colors = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges']
-    slice_colors = {slices[s]: colors[s % len(colors)] for s in range(num_slices)}
+    colors = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges', 'YlOrBr', 'BuPu']
+    slice_colors = {slices[s]: colors[s % len(colors)] for s in range(min(num_slices, len(slices)))}
     
     # Plot 1: RB allocation heatmap for each slice
     ax1 = axes[0, 0]
@@ -89,7 +89,10 @@ def plot_rb_assignments(z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
     # Plot 4: Bar chart showing RB distribution per slice
     ax4 = axes[1, 1]
     rb_per_slice = [np.sum(rb_usage_per_slice[s, :]) for s in range(num_slices)]
-    bars = ax4.bar(slices, rb_per_slice, color=['skyblue', 'lightcoral', 'lightgreen'][:num_slices])
+    # Generate colors dynamically based on number of slices
+    default_colors = ['skyblue', 'lightcoral', 'lightgreen', 'plum', 'wheat']
+    slice_colors = (default_colors * ((num_slices // len(default_colors)) + 1))[:num_slices]
+    bars = ax4.bar(slices, rb_per_slice, color=slice_colors)
     ax4.set_title('Total RB Assignments per Slice', fontweight='bold')
     ax4.set_ylabel('Total RB Assignments')
     ax4.set_xlabel('Slice Type')
@@ -123,6 +126,17 @@ def plot_rb_assignments(z_ib_sk, num_slices, num_UEs, num_RUs, num_RBs, slices,
 def plot_rb_efficiency_metrics(z_ib_sk, p_ib_sk, gain, total_R_sk, num_slices, num_UEs, 
                               num_RUs, num_RBs, slices, rb_bandwidth, frame_num=None, 
                               time_slot=None, save_path="./result", show_plot=True, save_plot=True):
+    
+    # --- Defensive shape checks ---
+    z_shape = z_ib_sk.shape
+    if len(z_shape) != 4:
+        raise ValueError(f"z_ib_sk must be 4D (RU, RB, slice, UE), got shape {z_shape}")
+    num_RUs_z, num_RBs_z, num_slices_z, num_UEs_z = z_shape
+    # Clip to min of provided and expected
+    num_slices = min(num_slices, num_slices_z)
+    num_UEs = min(num_UEs, num_UEs_z)
+    num_RUs = min(num_RUs, num_RUs_z)  
+    num_RBs = min(num_RBs, num_RBs_z)
  
     
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
@@ -148,7 +162,13 @@ def plot_rb_efficiency_metrics(z_ib_sk, p_ib_sk, gain, total_R_sk, num_slices, n
             for s in range(num_slices):
                 for k in range(num_UEs):
                     if z_ib_sk[i, b, s, k] > 0:
-                        snr = p_ib_sk[i, b, s, k] * gain[i, s, k, b] if gain.ndim == 4 else p_ib_sk[i, b, s, k] * gain[i, k, b]
+                        # Correct indexing: gain shape is (num_RUs, num_RBs, num_slices, num_UEs)
+                        # So it should be gain[i, b, s, k], not gain[i, s, k, b]
+                        if gain.ndim == 4:
+                            gain_value = gain[i, b, s, k]
+                        else:
+                            gain_value = gain[i, k, b]  # 3D case: (num_RUs, num_UEs, num_RBs)
+                        snr = p_ib_sk[i, b, s, k] * gain_value
                         rate = rb_bandwidth * np.log2(1 + snr)
                         total_rate_rb += rate
         spectral_eff[b] = total_rate_rb / rb_bandwidth
@@ -175,17 +195,20 @@ def plot_rb_efficiency_metrics(z_ib_sk, p_ib_sk, gain, total_R_sk, num_slices, n
     # Plot 3: Rate achievement per slice
     ax3 = axes[1, 0]
     if total_R_sk is not None:
-        rates_per_slice = [np.sum(total_R_sk[s, :]) for s in range(num_slices)]
-        bars = ax3.bar(slices, rates_per_slice, color=['lightblue', 'lightpink', 'lightgreen'][:num_slices])
-        ax3.set_title('Total Rate per Slice', fontweight='bold')
+        # Handle scalar or array
+        if np.isscalar(total_R_sk):
+            rates = np.array([total_R_sk])
+        elif isinstance(total_R_sk, np.ndarray) and total_R_sk.ndim >= 2:
+            rates = np.sum(total_R_sk, axis=1)
+        else:
+            rates = np.array(total_R_sk).flatten()
+        # Generate colors dynamically based on number of slices
+        default_colors = ['lightblue', 'lightpink', 'lightgreen', 'lightyellow', 'lightgray']
+        ax3.bar(range(len(rates)), rates, color=default_colors[:len(rates)], alpha=0.7)
+        ax3.set_title('Rate Achievement per Slice', fontweight='bold')
+        ax3.set_xlabel('Slice Index')
         ax3.set_ylabel('Total Rate (bps)')
-        ax3.set_xlabel('Slice Type')
-        
-        # Add value labels
-        for bar, value in zip(bars, rates_per_slice):
-            height = bar.get_height()
-            ax3.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{value/1e6:.1f}M', ha='center', va='bottom', fontweight='bold')
+        ax3.grid(True, alpha=0.3)
     
     # Plot 4: RB utilization efficiency
     ax4 = axes[1, 1]
@@ -197,7 +220,10 @@ def plot_rb_efficiency_metrics(z_ib_sk, p_ib_sk, gain, total_R_sk, num_slices, n
         utilization = (used_rbs / total_rbs) * 100
         rb_utilization.append(utilization)
     
-    bars = ax4.bar(slices, rb_utilization, color=['gold', 'orange', 'red'][:num_slices])
+    # Generate colors dynamically based on number of slices  
+    default_colors = ['gold', 'orange', 'red', 'purple', 'brown']
+    util_colors = (default_colors * ((num_slices // len(default_colors)) + 1))[:num_slices]
+    bars = ax4.bar(slices, rb_utilization, color=util_colors)
     ax4.set_title('RB Utilization per Slice', fontweight='bold')
     ax4.set_ylabel('Utilization (%)')
     ax4.set_xlabel('Slice Type')

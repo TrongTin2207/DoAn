@@ -17,7 +17,7 @@ num_RUs = 3                            # Số lượng RU (bao gồm RU ở tâm
 num_DUs = 2                             # Số lượng DU
 num_CUs = 2                             # Số lượng CU
 num_UEs = 5                             # Tổng số lượng user cho tất dịch vụ (eMBB, mMTC, URLLC)
-num_RBs = 5                             # Số lượng của RBs
+num_RBs = 10                             # Số lượng của RBs
 num_antennas = 8                        # Số lượng anntenas
 num_slices = 2                          # Số lượng loại dịch vụ - Changed to 2 to use all slice types
 
@@ -47,7 +47,8 @@ speed_of_light = 3e8                    # Speed of light in meters/second (m/s)
 speed_of_light_km_ms = speed_of_light / 1e6  # Speed of light in km/ms for propagation delay calculation
 
 # Packet parameters (added)
-packet_length = 1500 * 8                # Packet length in bits (1500 bytes * 8 bits/byte)
+packet_length_emBB = 50*8                # Packet length in bits (50 bytes * 8 bits/byte)
+packet_length_URLLC =  32*8                # Packet length in bits (32 bytes * 8 bits/byte)
 packet_processing_time_du = 0.05        # Processing time for a packet at DU (ms)
 packet_processing_time_cu = 0.02        # Processing time for a packet at CU (ms)
 
@@ -62,7 +63,7 @@ R_min_random_list = [1e6, 2e6, 5e5]                     # Modified for different
 delta_coordinate = 5                               # Sai số toạ độ của UE
 delta_num_UE = 5                                   # Sai số số lượng UE
 
-time_slot = 5                                      # Số lượng time slot trong 1 frame
+time_slot = 10                                  # Số lượng time slot trong 1 frame
 num_frame = 5
 
 gamma = 0.8                                        # Hệ số tối ưu
@@ -202,7 +203,8 @@ def main():
         lambda_s = [80, 60]  # Arrival rate (packets/ms)
 
         # Initialize distance matrix
-        d_sk = np.zeros((num_slices, num_UEs))
+        # d_sk should be (num_slices, num_UEs)
+        d_sk = np.tile(distances_RU_UE.mean(axis=0), (num_slices, 1))
 
         # Long-term solution: solve global optimization
         validation_log_file.write("\n===== LONG-TERM SOLUTION VALIDATION =====\n")
@@ -222,9 +224,7 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, 
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            c=speed_of_light_km_ms,  # Speed of light for propagation delay
-            d_sk=distances_RU_UE.mean(axis=0),  # Average distance matrix
-            max_latency=max_latency,
+            c=speed_of_light_km_ms,            d_sk=d_sk,            max_latency=max_latency,
             L_cu=L_cu,
             L_du=L_du, 
             rho_du=rho_du,
@@ -351,10 +351,8 @@ def main():
             )
 
             # Short-term optimization with None checks
-            validation_log_file.write(f"\nShort-term optimization parameters:\n")
-            validation_log_file.write(f"- New UE distances:\n{short_distances_RU_UE}\n")
-            validation_log_file.write(f"- Channel gains summary: min={np.min(short_gain)}, max={np.max(short_gain)}\n")
-            
+            # d_sk should be (num_slices, num_UEs)
+            short_d_sk = np.tile(short_distances_RU_UE.mean(axis=0), (num_slices, 1))
             # Try multiple power allocation strategies if initial solution fails
             power_scale_factors = [1.0, 0.9, 0.8, 0.7]
             short_term_result = None
@@ -366,7 +364,7 @@ def main():
                     num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i,
                     short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
                     c=speed_of_light_km_ms,
-                    d_sk=short_distances_RU_UE.mean(axis=0),
+                    d_sk=short_d_sk,
                     max_latency=max_latency,
                     L_cu=L_cu,
                     L_du=L_du,
@@ -436,7 +434,7 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            c=speed_of_light_km_ms, d_sk=distances_RU_UE.mean(axis=0),
+            c=speed_of_light_km_ms, d_sk=d_sk,
             max_latency=max_latency, L_cu=L_cu, L_du=L_du,
             rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s, logger=logger
         )
