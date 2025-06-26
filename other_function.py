@@ -6,13 +6,44 @@ import time
 from fnmatch import fnmatch
 import shutil
 import os
+import cvxpy as cp
+
+def extract_values(array, dtype=float):
+    """Extract values from CVXPY variables or arrays safely"""
+    
+    def process_value(x):
+        if hasattr(x, 'value'):
+            val = x.value
+            if val is None:
+                return dtype(0)
+            if isinstance(val, np.ndarray):
+                return val.astype(dtype)
+            return dtype(val)
+        if isinstance(x, (int, float, np.number)):
+            return dtype(x)
+        return dtype(0)
+
+    # Handle CVXPY Variable directly
+    if hasattr(array, 'value'):
+        val = array.value
+        if val is None:
+            return dtype(0)
+        if isinstance(val, np.ndarray):
+            return val.astype(dtype)
+        return dtype(val)
+
+    # Handle numpy arrays
+    if isinstance(array, np.ndarray):
+        result = np.zeros(array.shape, dtype=dtype)
+        for idx in np.ndindex(array.shape):
+            result[idx] = process_value(array[idx])
+        return result
+
+    # Handle scalar values
+    return process_value(array)
 
 def extract_optimization_results(pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk):
-    def extract_values(array, dtype):
-        shape = array.shape
-        flat_array = np.array([x.value for x in array.flatten()], dtype=dtype)
-        return flat_array.reshape(shape)
-
+    
     arr_pi_sk = extract_values(pi_sk, int)
     arr_z_ib_sk = extract_values(z_ib_sk, int)
     arr_p_ib_sk = extract_values(p_ib_sk, float)

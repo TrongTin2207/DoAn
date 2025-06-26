@@ -4,7 +4,7 @@
 #U_em/U_ur/U_mm:8/10/20
 #x= [0,-650,-650,650,650]
 #y= [0,650,-650,650,-650]
-#r_outdoor= 1000              #Outside radious for RU (meter)
+#r_outdoor= 1000  #Outside radious for RU (meter)
 #r_indoor= 100 #Inside radious for RU (meter)
 
 import numpy as np
