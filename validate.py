@@ -11,281 +11,137 @@ class ValidationLogger:
     def get_logs(self):
         return self.logs
 
-import numpy as np
-
 def safe_array_access(arr, indices, default=0.0):
     """Safely access array elements with bounds checking"""
     try:
         if isinstance(arr, list):
-            arr = arr
-
+            arr = np.array(arr)
+        
         if isinstance(indices, int):
             indices = [indices]
-
+        
+        # Check bounds for each dimension
         for i, idx in enumerate(indices):
-            if i >= len(arr) or idx >= len(arr[i]):
+            if i >= len(arr.shape) or idx >= arr.shape[i]:
                 return default
-
+        
         if len(indices) == 1:
             return arr[indices[0]]
         elif len(indices) == 2:
-            return arr[indices[0]][indices[1]]
+            return arr[indices[0], indices[1]]
         else:
-            raise IndexError("Too many indices")
-    except Exception:
+            return arr[tuple(indices)]
+    except (IndexError, AttributeError):
         return default
 
 def safe_float(value):
-    """Safely convert a value to float, handling None, cvxpy.Variable, numpy arrays, and lists."""
-    import numpy as np
-    import cvxpy as cp
-    # Handle None
+    """Safely convert a value to float, handling None values and CVXPY variables."""
     if value is None:
         return 0.0
-    # Handle cvxpy objects
-    if isinstance(value, (cp.Expression, cp.Variable)):
-        try:
-            val = value.value
-            if val is None:
-                return 0.0
-            return safe_float(val)
-        except Exception:
+    if hasattr(value, 'value'):
+        if value.value is None:
             return 0.0
-    # Handle numpy arrays
-    if isinstance(value, np.ndarray):
-        if value.size == 0:
-            return 0.0
-        if value.shape == () or value.shape == (1,):
-            return float(value.item())
-        # If it's a 1-element array
-        if value.size == 1:
-            return float(value.flatten()[0])
-        # If it's a multi-element array, take the first element
-        return float(np.array(value).flatten()[0])
-    # Handle lists or tuples
-    if isinstance(value, (list, tuple)):
-        if len(value) == 0:
-            return 0.0
-        # Recursively extract from the first element
-        return safe_float(value[0])
-    # Try to convert directly
-    try:
+        return float(value.value)
+    if isinstance(value, (int, float, np.number)):
         return float(value)
-    except Exception:
-        return 0.0
-
+    return 0.0  # Default case
+'''
 def validate_latency_constraints(num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
                                 z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
-                                c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger=None):
+                                c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger):
     """
-    Validate latency constraints for uRLLC users with improved stability handling and detailed error reporting.
-    Returns (latency_valid, error_list)
+    Validate latency constraints for uRLLC users
     """
     latency_valid = True
-    error_list = []
-    STABILITY_MARGIN = 1e-4  # Same value as in calculate_latency_components
-
+    
+    # Convert parameters to numpy arrays for consistent handling
     d_sk_arr = np.array(d_sk) if isinstance(d_sk, list) else d_sk
     R_sk_arr = np.array(R_sk_val) if isinstance(R_sk_val, list) else R_sk_val
     lambda_s_arr = np.array(lambda_s) if isinstance(lambda_s, list) else lambda_s
     mu_s_arr = np.array(mu_s) if isinstance(mu_s, list) else mu_s
     rho_du_arr = np.array(rho_du) if isinstance(rho_du, list) else rho_du
-
+    
+    # Ensure d_sk_arr is 2D
     if d_sk_arr.ndim == 1:
         d_sk_arr = d_sk_arr.reshape(1, -1)
+    
+    # Ensure R_sk_arr is 2D
     if R_sk_arr.ndim == 1:
         R_sk_arr = R_sk_arr.reshape(1, -1)
-
+    
     for s in range(num_slices):
         for k in range(num_UEs):
-            if pi_sk_val[s, k] >= 0.5:  # UE is selected
-                # 1. Propagation Latency
+            if pi_sk_val[s, k] > 0.5:  # UE is selected
+                # Calculate latency components
+                
+                # 1. Propagation Latency: L_s,k^prop(t) = (1/c) * d_s,k * z_s,k^bi[t]
                 L_prop = 0.0
                 for i in range(num_RUs):
                     for b in range(num_RBs):
-                        d_val = safe_array_access(d_sk_arr, [s, k], default=1000.0)
+                        # Safe access to d_sk
+                        d_val = safe_array_access(d_sk_arr, [s, k], default=1000.0)  # Default 1km
                         L_prop += (1.0/c) * d_val/1000.0 * z_ib_sk_val[i, b, s, k]
-                # 2. Transmission Latency
+                
+                # 2. Transmission Latency: L_s,k^trans = Λ_s / R_s,k
                 small_constant = 1e-10
                 lambda_s_val = safe_array_access(lambda_s_arr, [s], default=1.0)
                 R_sk_safe = max(safe_array_access(R_sk_arr, [s, k], default=1e6), small_constant)
                 L_trans = lambda_s_val / R_sk_safe
-                # 3. Queuing Latency
+                
+                # 3. Queuing Latency: L_s,k^queue = ρ_du * z_s,k^bi / (μ_s - Λ_s)
                 L_queue = 0.0
                 rho_du_val = safe_array_access(rho_du_arr, [s], default=0.5)
                 mu_s_val = safe_array_access(mu_s_arr, [s], default=10.0)
                 denominator = mu_s_val - lambda_s_val
-                if denominator <= STABILITY_MARGIN:
-                    warning_msg = f"Queue stability issue for slice {s}: μ_s ({mu_s_val:.6f}) - Λ_s ({lambda_s_val:.6f}) = {denominator:.6f} <= {STABILITY_MARGIN:.6f}"
-                    if logger and hasattr(logger, 'add'):
-                        logger.add(f"Warning: {warning_msg}")
-                    else:
-                        print(f"Warning: {warning_msg}")
-                    queue_coefficient = rho_du_val / STABILITY_MARGIN
-                    L_queue = queue_coefficient
-                    latency_valid = False
-                    error_list.append({
-                        'type': 'queue_stability',
-                        'slice': s, 'ue': k,
-                        'mu_s': mu_s_val, 'lambda_s': lambda_s_val,
-                        'margin': denominator,
-                        'message': warning_msg
-                    })
-                else:
+                
+                if denominator > 1e-10:  # Avoid division by zero
                     for i in range(num_RUs):
                         for b in range(num_RBs):
                             L_queue += rho_du_val * z_ib_sk_val[i, b, s, k] / denominator
-                # 4. Processing Latency
+                else:
+                    if hasattr(logger, 'add'):
+                        logger.add(f"Warning: μ_s - Λ_s is too small for slice {s}, queuing latency may be invalid")
+                    else:
+                        print(f"Warning: μ_s - Λ_s is too small for slice {s}, queuing latency may be invalid")
+                    L_queue = float('inf')  # Invalid queuing latency
+                
+                # 4. Processing Latency: L_s,k^proc = L_cu * ϕ_s,k^m + ϕ_s,k^j * L_du
                 L_proc = 0.0
                 L_cu_val = safe_float(L_cu)
                 L_du_val = safe_float(L_du)
+                
+                # CU processing latency
                 for m in range(num_CUs):
                     L_proc += L_cu_val * phi_m_sk_val[m, s, k]
+                
+                # DU processing latency
                 for j in range(num_DUs):
                     L_proc += phi_j_sk_val[j, s, k] * L_du_val
+                
                 # Total Latency
                 total_latency = L_prop + L_trans + L_queue + L_proc
                 max_latency_val = safe_float(max_latency)
-                tolerance = STABILITY_MARGIN
-                # Detailed error reporting for each component
-                if L_prop > 0.5 * max_latency_val:
-                    error_list.append({
-                        'type': 'propagation', 'slice': s, 'ue': k,
-                        'value': L_prop, 'threshold': max_latency_val,
-                        'message': f'Propagation latency high: {L_prop:.6f} > 0.5*max {max_latency_val:.6f}'
-                    })
-                if L_trans > 0.5 * max_latency_val:
-                    error_list.append({
-                        'type': 'transmission', 'slice': s, 'ue': k,
-                        'value': L_trans, 'threshold': max_latency_val,
-                        'message': f'Transmission latency high: {L_trans:.6f} > 0.5*max {max_latency_val:.6f}'
-                    })
-                if L_queue > 0.5 * max_latency_val:
-                    error_list.append({
-                        'type': 'queuing', 'slice': s, 'ue': k,
-                        'value': L_queue, 'threshold': max_latency_val,
-                        'message': f'Queuing latency high: {L_queue:.6f} > 0.5*max {max_latency_val:.6f}'
-                    })
-                if L_proc > 0.5 * max_latency_val:
-                    error_list.append({
-                        'type': 'processing', 'slice': s, 'ue': k,
-                        'value': L_proc, 'threshold': max_latency_val,
-                        'message': f'Processing latency high: {L_proc:.6f} > 0.5*max {max_latency_val:.6f}'
-                    })
-                if total_latency > max_latency_val + tolerance:
-                    violation_msg = f"Latency violation: UE ({s},{k}) total latency {total_latency:.6f} > max {max_latency_val:.6f} (excess: {total_latency - max_latency_val:.6f})"
-                    component_breakdown = [
-                        f"  - Propagation: {L_prop:.6f}",
-                        f"  - Transmission: {L_trans:.6f}",
-                        f"  - Queuing: {L_queue:.6f}",
-                        f"  - Processing: {L_proc:.6f}"
-                    ]
-                    if logger and hasattr(logger, 'add'):
-                        logger.add(violation_msg)
-                        for line in component_breakdown:
-                            logger.add(line)
-                    else:
-                        print(violation_msg)
-                        for line in component_breakdown:
-                            print(line)
-                    latency_valid = False
-                    error_list.append({
-                        'type': 'total_latency',
-                        'slice': s, 'ue': k,
-                        'value': total_latency, 'threshold': max_latency_val,
-                        'components': {
-                            'propagation': L_prop,
-                            'transmission': L_trans,
-                            'queuing': L_queue,
-                            'processing': L_proc
-                        },
-                        'message': violation_msg
-                    })
-                else:
-                    success_msg = f"Latency OK: UE ({s},{k}) total latency {total_latency:.6f} <= max {max_latency_val:.6f}"
-                    if logger and hasattr(logger, 'debug'):
-                        logger.debug(success_msg)
-    return latency_valid, error_list
-
-def validate_queue_stability(mu_s, lambda_s, logger=None):
-    """
-    FIXED: Validate queue stability conditions before optimization
-    Returns adjusted parameters that are consistent with optimization constraints
-    """
-    mu_s_adj = np.array(mu_s) if isinstance(mu_s, list) else mu_s
-    lambda_s_adj = np.array(lambda_s) if isinstance(lambda_s, list) else lambda_s
-    
-    # Use same stability margin as optimization function
-    STABILITY_MARGIN = 1e-4
-    
-    adjustments_made = False
-    
-    if isinstance(mu_s_adj, np.ndarray) and isinstance(lambda_s_adj, np.ndarray):
-        for s in range(len(mu_s_adj)):
-            s_idx = min(s, len(lambda_s_adj) - 1)
-            
-            # FIXED: Use consistent stability margin
-            required_margin = STABILITY_MARGIN
-            
-            if mu_s_adj[s] <= lambda_s_adj[s_idx] + required_margin:
-                old_mu = mu_s_adj[s]
-                mu_s_adj[s] = lambda_s_adj[s_idx] + required_margin + 1e-6  # Small additional buffer
-                adjustments_made = True
                 
-                msg = f"Adjusted μ_s[{s}] from {old_mu:.6f} to {mu_s_adj[s]:.6f} for stability (margin: {required_margin:.6f})"
-                if logger and hasattr(logger, 'add'):
-                    logger.add(f"Pre-optimization adjustment: {msg}")
-                elif logger:
-                    print(f"Pre-optimization adjustment: {msg}")
-    
-    return mu_s_adj.tolist() if isinstance(mu_s_adj, np.ndarray) else mu_s_adj, adjustments_made
-
-def ensure_optimization_parameter_consistency(mu_s, lambda_s):
-    """
-    NEW: Ensure parameters are consistent with optimization constraints before solving
-    This function should be called before creating the CVXPY problem
-    """
-    STABILITY_MARGIN = 1e-4
-    
-    mu_s_arr = np.array(mu_s) if isinstance(mu_s, list) else np.array([mu_s])
-    lambda_s_arr = np.array(lambda_s) if isinstance(lambda_s, list) else np.array([lambda_s])
-    
-    # Ensure mu_s > lambda_s + STABILITY_MARGIN for all slices
-    for s in range(len(mu_s_arr)):
-        s_idx = min(s, len(lambda_s_arr) - 1)
-        if mu_s_arr[s] <= lambda_s_arr[s_idx] + STABILITY_MARGIN:
-            print(f"Adjusting μ_s[{s}] for optimization consistency: {mu_s_arr[s]:.6f} -> {lambda_s_arr[s_idx] + STABILITY_MARGIN + 1e-6:.6f}")
-            mu_s_arr[s] = lambda_s_arr[s_idx] + STABILITY_MARGIN + 1e-6
-    
-    return mu_s_arr.tolist() if len(mu_s_arr) > 1 else float(mu_s_arr[0])
-
+                # Validate latency constraint
+                if total_latency > max_latency_val + 1e-6:  # Allow small tolerance
+                    if hasattr(logger, 'add'):
+                        logger.add(f"Latency violation: UE ({s},{k}) total latency {total_latency:.6f} > max {max_latency_val}")
+                        logger.add(f"  - Propagation: {L_prop:.6f}")
+                        logger.add(f"  - Transmission: {L_trans:.6f}")
+                        logger.add(f"  - Queuing: {L_queue:.6f}")
+                        logger.add(f"  - Processing: {L_proc:.6f}")
+                    else:
+                        print(f"Latency violation: UE ({s},{k}) total latency {total_latency:.6f} > max {max_latency_val}")
+                        print(f"  - Propagation: {L_prop:.6f}")
+                        print(f"  - Transmission: {L_trans:.6f}")
+                        print(f"  - Queuing: {L_queue:.6f}")
+                        print(f"  - Processing: {L_proc:.6f}")
+                    latency_valid = False
+'''
 def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R_min, epsilon, 
                                 arr_pi_sk, arr_phi_i_sk, pi_sk_result, z_ib_sk_result, p_ib_sk_result, mu_ib_sk_result, 
                                 c=None, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None,
                                 logger=None):
-    # Ensure arr_pi_sk and arr_phi_i_sk are arrays of the correct shape
-    import numpy as np
-    if isinstance(arr_pi_sk, (int, float)):
-        arr_pi_sk = np.full((num_slices, num_UEs), arr_pi_sk)
-    elif isinstance(arr_pi_sk, (list, tuple, np.ndarray)):
-        arr_pi_sk = np.array(arr_pi_sk)
-        if arr_pi_sk.ndim == 0:
-            arr_pi_sk = np.full((num_slices, num_UEs), arr_pi_sk.item())
-        elif arr_pi_sk.ndim == 1:
-            arr_pi_sk = np.tile(arr_pi_sk, (num_slices, 1)) if arr_pi_sk.shape[0] == num_UEs else np.tile(arr_pi_sk, (1, num_UEs))
-        elif arr_pi_sk.shape != (num_slices, num_UEs):
-            arr_pi_sk = np.broadcast_to(arr_pi_sk, (num_slices, num_UEs))
-    if isinstance(arr_phi_i_sk, (int, float)):
-        arr_phi_i_sk = np.full((num_RUs, num_slices, num_UEs), arr_phi_i_sk)
-    elif isinstance(arr_phi_i_sk, (list, tuple, np.ndarray)):
-        arr_phi_i_sk = np.array(arr_phi_i_sk)
-        if arr_phi_i_sk.ndim == 0:
-            arr_phi_i_sk = np.full((num_RUs, num_slices, num_UEs), arr_phi_i_sk.item())
-        elif arr_phi_i_sk.ndim == 1:
-            arr_phi_i_sk = np.tile(arr_phi_i_sk, (num_RUs, num_slices, num_UEs))
-        elif arr_phi_i_sk.shape != (num_RUs, num_slices, num_UEs):
-            arr_phi_i_sk = np.broadcast_to(arr_phi_i_sk, (num_RUs, num_slices, num_UEs))
-    
     if logger is None:
         logger = ValidationLogger()
     
@@ -357,7 +213,7 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f}, p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
                     else:  # z is 1
-                        if abs(mu_val - p_val) > tol:  # mu should equal to p
+                        if abs(mu_val - p_val) > tol:  # mu should equal p
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} not equal to p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
     
@@ -422,31 +278,28 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     logger.add(f"pi_sk matches input array: {pi_sk_match}")
     
     # 6. Validate latency constraints if parameters are provided
-    latency_constraint_valid = True
-    if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
-        logger.add("Validating latency constraints...")
-        # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)
-        # We need dummy phi arrays for short term validation
-        phi_j_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
-        phi_m_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
-        
-        # For short term, we can assume simple mapping based on phi_i_sk
-        for s in range(num_slices):
-            for k in range(num_UEs):
-                for i in range(num_RUs):
-                    if arr_phi_i_sk[i, s, k] > 0.5:
-                        phi_j_sk_val[i, s, k] = 1.0  # Map to corresponding DU
-                        phi_m_sk_val[i, s, k] = 1.0  # Map to corresponding CU
-
-        latency_constraint_valid, error_list = validate_latency_constraints(
-            num_slices, num_UEs, num_RUs, num_RBs, num_RUs, num_RUs,  # Using num_RUs for DUs and CUs
-            z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
-            c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
-        )
-    else:
-        logger.add("Latency parameters not provided, skipping latency validation")
-    
-    logger.add(f"Latency constraint validated: {latency_constraint_valid}")
+    # latency_constraint_valid = True
+    # if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
+    #     logger.add("Validating latency constraints...")
+    #     # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)
+    #     # We need dummy phi arrays for short term validation
+    #     phi_j_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
+    #     phi_m_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
+    #     # For short term, we can assume simple mapping based on phi_i_sk
+    #     for s in range(num_slices):
+    #         for k in range(num_UEs):
+    #             for i in range(num_RUs):
+    #                 if arr_phi_i_sk[i, s, k] > 0.5:
+    #                     phi_j_sk_val[i, s, k] = 1.0  # Map to corresponding DU
+    #                     phi_m_sk_val[i, s, k] = 1.0  # Map to corresponding CU
+    #     latency_constraint_valid = validate_latency_constraints(
+    #         num_slices, num_UEs, num_RUs, num_RBs, num_RUs, num_RUs,  # Using num_RUs for DUs and CUs
+    #         z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
+    #         c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
+    #     )
+    # else:
+    #     logger.add("Latency parameters not provided, skipping latency validation")
+    # logger.add(f"Latency constraint validated: {latency_constraint_valid}")
 
     # 7. Calculate and display objective value (max number of served UEs)
     served_UEs = np.sum(pi_sk_val)
@@ -506,7 +359,6 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
     """
     Validate the solution from the long_term optimization model
     """
-    
     if logger is None:
         logger = ValidationLogger()
     
@@ -597,7 +449,7 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f}, p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
                     else:  # z is 1
-                        if abs(mu_val - p_val) > tol:  # mu should equal to p
+                        if abs(mu_val - p_val) > tol:  # mu should equal p
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} not equal to p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
     
@@ -768,12 +620,12 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
                 slice_map_valid = False
     
     logger.add(f"Slice mapping constraint validated: {slice_map_valid}")
-
+    '''
     # 12. Validate latency constraints if parameters are provided
     latency_constraint_valid = True
     if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
         logger.add("Validating latency constraints...")
-        latency_constraint_valid, error_list = validate_latency_constraints(
+        latency_constraint_valid = validate_latency_constraints(
             num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
             z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
             c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
@@ -782,7 +634,7 @@ def validate_long_term_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, 
         logger.add("Latency parameters not provided, skipping latency validation")
     
     logger.add(f"Latency constraint validated: {latency_constraint_valid}")
-
+    '''
     # 13. Check eMBB data rate upper bound if applicable
     # NOTE: eMBB should only have a lower bound, not an upper bound. Remove this check.
     embb_rate_valid = True
@@ -810,29 +662,6 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
                                 arr_pi_sk, arr_phi_i_sk, pi_sk_result, z_ib_sk_result, p_ib_sk_result, mu_ib_sk_result, 
                                 d_sk=None, c=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None,
                                 logger=None):
-    # Ensure arr_pi_sk and arr_phi_i_sk are arrays of the correct shape
-    import numpy as np
-    if isinstance(arr_pi_sk, (int, float)):
-        arr_pi_sk = np.full((num_slices, num_UEs), arr_pi_sk)
-    elif isinstance(arr_pi_sk, (list, tuple, np.ndarray)):
-        arr_pi_sk = np.array(arr_pi_sk)
-        if arr_pi_sk.ndim == 0:
-            arr_pi_sk = np.full((num_slices, num_UEs), arr_pi_sk.item())
-        elif arr_pi_sk.ndim == 1:
-            arr_pi_sk = np.tile(arr_pi_sk, (num_slices, 1)) if arr_pi_sk.shape[0] == num_UEs else np.tile(arr_pi_sk, (1, num_UEs))
-        elif arr_pi_sk.shape != (num_slices, num_UEs):
-            arr_pi_sk = np.broadcast_to(arr_pi_sk, (num_slices, num_UEs))
-    if isinstance(arr_phi_i_sk, (int, float)):
-        arr_phi_i_sk = np.full((num_RUs, num_slices, num_UEs), arr_phi_i_sk)
-    elif isinstance(arr_phi_i_sk, (list, tuple, np.ndarray)):
-        arr_phi_i_sk = np.array(arr_phi_i_sk)
-        if arr_phi_i_sk.ndim == 0:
-            arr_phi_i_sk = np.full((num_RUs, num_slices, num_UEs), arr_phi_i_sk.item())
-        elif arr_phi_i_sk.ndim == 1:
-            arr_phi_i_sk = np.tile(arr_phi_i_sk, (num_RUs, num_slices, num_UEs))
-        elif arr_phi_i_sk.shape != (num_RUs, num_slices, num_UEs):
-            arr_phi_i_sk = np.broadcast_to(arr_phi_i_sk, (num_RUs, num_slices, num_UEs))
-    
     if logger is None:
         logger = ValidationLogger()
     
@@ -904,13 +733,13 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f}, p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
                     else:  # z is 1
-                        if abs(mu_val - p_val) > tol:  # mu should equal to p
+                        if abs(mu_val - p_val) > tol:  # mu should equal p
                             logger.add(f"Constraint violation: mu_ib_sk[{i},{b},{s},{k}] = {mu_val:.4f} not equal to p = {p_val:.4f} when z = {z_val:.1f}")
                             mu_constraint_valid = False
     
     logger.add(f"mu = z * p constraint validated: {mu_constraint_valid}")
     
-    # 4. Calculate and check data rates (R_sk ≥ R_min * pi_sk)
+    # 4. Calculate and check data rates (R_sk ≥ R_min * pi_sk) !!! chu y
     rate_constraint_valid = True
     R_sk_val = np.zeros((num_slices, num_UEs))
     
@@ -969,31 +798,28 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     logger.add(f"pi_sk matches input array: {pi_sk_match}")
     
     # 6. Validate latency constraints if parameters are provided
-    latency_constraint_valid = True
-    if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
-        logger.add("Validating latency constraints...")
-        # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)
-        # We need dummy phi arrays for short term validation
-        phi_j_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
-        phi_m_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
-        
-        # For short term, we can assume simple mapping based on phi_i_sk
-        for s in range(num_slices):
-            for k in range(num_UEs):
-                for i in range(num_RUs):
-                    if arr_phi_i_sk[i, s, k] > 0.5:
-                        phi_j_sk_val[i, s, k] = 1.0  # Map to corresponding DU
-                        phi_m_sk_val[i, s, k] = 1.0  # Map to corresponding CU
-
-        latency_constraint_valid, error_list = validate_latency_constraints(
-            num_slices, num_UEs, num_RUs, num_RBs, num_RUs, num_RUs,  # Using num_RUs for DUs and CUs
-            z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
-            c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
-        )
-    else:
-        logger.add("Latency parameters not provided, skipping latency validation")
-    
-    logger.add(f"Latency constraint validated: {latency_constraint_valid}")
+    # latency_constraint_valid = True
+    # if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
+    #     logger.add("Validating latency constraints...")
+    #     # For short term, we assume num_DUs = num_CUs = num_RUs (as placeholders)
+    #     # We need dummy phi arrays for short term validation
+    #     phi_j_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
+    #     phi_m_sk_val = np.zeros((num_RUs, num_slices, num_UEs))  # Using num_RUs as placeholder
+    #     # For short term, we can assume simple mapping based on phi_i_sk
+    #     for s in range(num_slices):
+    #         for k in range(num_UEs):
+    #             for i in range(num_RUs):
+    #                 if arr_phi_i_sk[i, s, k] > 0.5:
+    #                     phi_j_sk_val[i, s, k] = 1.0  # Map to corresponding DU
+    #                     phi_m_sk_val[i, s, k] = 1.0  # Map to corresponding CU
+    #     latency_constraint_valid = validate_latency_constraints(
+    #         num_slices, num_UEs, num_RUs, num_RBs, num_RUs, num_RUs,  # Using num_RUs for DUs and CUs
+    #         z_ib_sk_val, R_sk_val, phi_j_sk_val, phi_m_sk_val, pi_sk_val,
+    #         c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger
+    #     )
+    # else:
+    #     logger.add("Latency parameters not provided, skipping latency validation")
+    # logger.add(f"Latency constraint validated: {latency_constraint_valid}")
 
     # 7. Calculate and display objective value (max number of served UEs)
     served_UEs = np.sum(pi_sk_val)
@@ -1043,3 +869,428 @@ def validate_short_term_solution(num_slices, num_UEs, num_RUs, num_RBs, rb_bandw
     logger.add(f"\nAll constraints validated: {all_valid}")
     
     return all_valid, R_sk_val
+
+def validate_random_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
+                               P_i, rb_bandwidth, R_min, gain, slice_mapping,
+                               pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk,
+                               logger=None):
+    """
+    Validate the Random-RU solution results against all constraints.
+    
+    Args:
+        All parameters from random_ru_solution function plus its outputs
+        
+    Returns:
+        tuple: (all_valid: bool, validation_summary: dict)
+    """
+    if logger is None:
+        logger = ValidationLogger()
+    
+    logger.add("\n=== Validating Random-RU Solution ===\n")
+    
+    # Check if any result is None
+    if any(x is None for x in [pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk]):
+        logger.add("Error: One or more solution results are None. Validation cannot proceed.")
+        return False, {"error": "None results"}
+    
+    validation_results = {}
+    
+    # 1. Validate RU assignment constraint (phi_i_sk)
+    ru_assignment_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if slice_mapping[s, k] == 1:  # UE k belongs to slice s
+                assigned_rus = np.sum(phi_i_sk[:, s, k])
+                if assigned_rus > 1 + 1e-6:  # Should be at most 1
+                    logger.add(f"RU assignment violation: UE({s},{k}) assigned to {assigned_rus:.4f} RUs (should be ≤1)")
+                    ru_assignment_valid = False
+                elif pi_sk[s, k] > 0 and assigned_rus < 1e-6:  # If served, should have an RU
+                    logger.add(f"RU assignment violation: Served UE({s},{k}) has no RU assigned")
+                    ru_assignment_valid = False
+    
+    validation_results['ru_assignment'] = ru_assignment_valid
+    logger.add(f"RU assignment constraint validated: {ru_assignment_valid}")
+    
+    # 2. Validate RB allocation constraint (each RB to at most one (i,s,k))
+    rb_allocation_valid = True
+    for b in range(num_RBs):
+        total_allocation = np.sum(z_ib_sk[:, b, :, :])
+        if total_allocation > 1 + 1e-6:
+            users = []
+            for i in range(num_RUs):
+                for s in range(num_slices):
+                    for k in range(num_UEs):
+                        if z_ib_sk[i, b, s, k] > 0.5:
+                            users.append(f"(RU{i},Slice{s},UE{k})")
+            logger.add(f"RB allocation violation: RB {b} allocated to {total_allocation:.4f} users. Users: {', '.join(users)}")
+            rb_allocation_valid = False
+    
+    validation_results['rb_allocation'] = rb_allocation_valid
+    logger.add(f"RB allocation constraint validated: {rb_allocation_valid}")
+    
+    # 3. Validate power constraint (total power per RU ≤ P_i)
+    power_constraint_valid = True
+    for i in range(num_RUs):
+        total_power = np.sum(p_ib_sk[i, :, :, :])
+        P_i_val = P_i[i] if isinstance(P_i, (list, np.ndarray)) else P_i
+        if total_power > P_i_val + 1e-6:
+            logger.add(f"Power constraint violation: RU {i} uses {total_power:.4f} > limit {P_i_val}")
+            power_constraint_valid = False
+    
+    validation_results['power_constraint'] = power_constraint_valid
+    logger.add(f"Power constraint validated: {power_constraint_valid}")
+    
+    # 4. Validate mu = z * p constraint
+    mu_constraint_valid = True
+    for i in range(num_RUs):
+        for b in range(num_RBs):
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    expected_mu = z_ib_sk[i, b, s, k] * p_ib_sk[i, b, s, k]
+                    actual_mu = mu_ib_sk[i, b, s, k]
+                    if abs(expected_mu - actual_mu) > 1e-6:
+                        logger.add(f"mu constraint violation: mu[{i},{b},{s},{k}] = {actual_mu:.6f} != z*p = {expected_mu:.6f}")
+                        mu_constraint_valid = False
+    
+    validation_results['mu_constraint'] = mu_constraint_valid
+    logger.add(f"mu = z * p constraint validated: {mu_constraint_valid}")
+    
+    # 5. Validate rate calculation and minimum rate constraint
+    rate_constraint_valid = True
+    calculated_rates = np.zeros((num_slices, num_UEs))
+    
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if slice_mapping[s, k] == 1:
+                rate = 0
+                for i in range(num_RUs):
+                    for b in range(num_RBs):
+                        if z_ib_sk[i, b, s, k] > 0.5:
+                            snr = gain[i, b, s, k] * p_ib_sk[i, b, s, k]
+                            rate += rb_bandwidth * np.log2(1 + snr)
+                
+                calculated_rates[s, k] = rate
+                
+                # Check if calculated rate matches stored rate
+                if abs(rate - total_R_sk[s, k]) > 1e-3:
+                    logger.add(f"Rate calculation mismatch: UE({s},{k}) calculated={rate:.4f}, stored={total_R_sk[s, k]:.4f}")
+                    rate_constraint_valid = False
+                
+                # Check minimum rate constraint for served UEs
+                if pi_sk[s, k] > 0:
+                    R_min_val = R_min[k] if isinstance(R_min, (list, np.ndarray)) else R_min
+                    if rate < R_min_val - 1e-6:
+                        logger.add(f"Min rate violation: UE({s},{k}) rate {rate:.4f} < R_min {R_min_val}")
+                        rate_constraint_valid = False
+    
+    validation_results['rate_constraint'] = rate_constraint_valid
+    logger.add(f"Rate constraint validated: {rate_constraint_valid}")
+    
+    # 6. Validate DU assignment constraint (each served UE assigned to exactly one DU)
+    du_assignment_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if pi_sk[s, k] > 0:  # UE is served
+                assigned_dus = np.sum(phi_j_sk[:, s, k])
+                if abs(assigned_dus - 1) > 1e-6:
+                    logger.add(f"DU assignment violation: Served UE({s},{k}) assigned to {assigned_dus:.4f} DUs (should be 1)")
+                    du_assignment_valid = False
+            else:  # UE not served
+                assigned_dus = np.sum(phi_j_sk[:, s, k])
+                if assigned_dus > 1e-6:
+                    logger.add(f"DU assignment violation: Unserved UE({s},{k}) assigned to {assigned_dus:.4f} DUs (should be 0)")
+                    du_assignment_valid = False
+    
+    validation_results['du_assignment'] = du_assignment_valid
+    logger.add(f"DU assignment constraint validated: {du_assignment_valid}")
+    
+    # 7. Validate CU assignment constraint (each served UE assigned to exactly one CU)
+    cu_assignment_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if pi_sk[s, k] > 0:  # UE is served
+                assigned_cus = np.sum(phi_m_sk[:, s, k])
+                if abs(assigned_cus - 1) > 1e-6:
+                    logger.add(f"CU assignment violation: Served UE({s},{k}) assigned to {assigned_cus:.4f} CUs (should be 1)")
+                    cu_assignment_valid = False
+            else:  # UE not served
+                assigned_cus = np.sum(phi_m_sk[:, s, k])
+                if assigned_cus > 1e-6:
+                    logger.add(f"CU assignment violation: Unserved UE({s},{k}) assigned to {assigned_cus:.4f} CUs (should be 0)")
+                    cu_assignment_valid = False
+    
+    validation_results['cu_assignment'] = cu_assignment_valid
+    logger.add(f"CU assignment constraint validated: {cu_assignment_valid}")
+    
+    # 8. Validate slice mapping constraint
+    slice_mapping_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if slice_mapping[s, k] == 0 and pi_sk[s, k] > 1e-6:
+                logger.add(f"Slice mapping violation: UE {k} served in slice {s} but slice_mapping[{s},{k}] = 0")
+                slice_mapping_valid = False
+    
+    validation_results['slice_mapping'] = slice_mapping_valid
+    logger.add(f"Slice mapping constraint validated: {slice_mapping_valid}")
+    
+    # 9. Calculate performance metrics
+    total_served_ues = np.sum(pi_sk)
+    total_rate = np.sum(total_R_sk)
+    power_efficiency = np.sum([np.sum(p_ib_sk[i, :, :, :]) / (P_i[i] if isinstance(P_i, (list, np.ndarray)) else P_i) 
+                              for i in range(num_RUs)]) / num_RUs
+    
+    validation_results['metrics'] = {
+        'served_ues': total_served_ues,
+        'total_rate': total_rate,
+        'power_efficiency': power_efficiency
+    }
+    
+    logger.add(f"\nPerformance Metrics:")
+    logger.add(f"Total served UEs: {total_served_ues}")
+    logger.add(f"Total data rate: {total_rate:.4f}")
+    logger.add(f"Average power efficiency: {power_efficiency:.4f}")
+    
+    # Overall validation result
+    all_constraints = [ru_assignment_valid, rb_allocation_valid, power_constraint_valid, 
+                      mu_constraint_valid, rate_constraint_valid, du_assignment_valid, 
+                      cu_assignment_valid, slice_mapping_valid]
+    all_valid = all(all_constraints)
+    
+    validation_results['all_valid'] = all_valid
+    logger.add(f"\nAll constraints validated: {all_valid}")
+    
+    return all_valid, validation_results
+
+
+def validate_nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
+                                P_i, rb_bandwidth, R_min, gain, slice_mapping, ue_coords, ru_coords,
+                                pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk,
+                                logger=None):
+    """
+    Validate the Nearest-RU solution results against all constraints.
+    
+    Args:
+        All parameters from nearest_ru_solution function plus its outputs
+        
+    Returns:
+        tuple: (all_valid: bool, validation_summary: dict)
+    """
+    if logger is None:
+        logger = ValidationLogger()
+    
+    logger.add("\n=== Validating Nearest-RU Solution ===\n")
+    
+    # Check if any result is None
+    if any(x is None for x in [pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk]):
+        logger.add("Error: One or more solution results are None. Validation cannot proceed.")
+        return False, {"error": "None results"}
+    
+    validation_results = {}
+    
+    # 1. Validate nearest RU assignment logic
+    nearest_assignment_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if slice_mapping[s, k] == 1:
+                # Calculate expected nearest RU
+                distances = [np.linalg.norm(ue_coords[k] - ru_coords[i]) for i in range(num_RUs)]
+                expected_nearest = np.argmin(distances)
+                
+                # Check if UE is assigned to the nearest RU
+                assigned_ru = np.argmax(phi_i_sk[:, s, k])
+                if phi_i_sk[assigned_ru, s, k] < 0.5:
+                    logger.add(f"Nearest RU logic violation: UE({s},{k}) not assigned to any RU")
+                    nearest_assignment_valid = False
+                elif assigned_ru != expected_nearest:
+                    logger.add(f"Nearest RU logic violation: UE({s},{k}) assigned to RU{assigned_ru}, but nearest is RU{expected_nearest}")
+                    logger.add(f"  Distance to assigned: {distances[assigned_ru]:.4f}, Distance to nearest: {distances[expected_nearest]:.4f}")
+                    nearest_assignment_valid = False
+    
+    validation_results['nearest_assignment'] = nearest_assignment_valid
+    logger.add(f"Nearest RU assignment logic validated: {nearest_assignment_valid}")
+    
+    # 2. Validate RB allocation constraint (each RB to at most one (i,s,k))
+    rb_allocation_valid = True
+    for b in range(num_RBs):
+        total_allocation = np.sum(z_ib_sk[:, b, :, :])
+        if total_allocation > 1 + 1e-6:
+            users = []
+            for i in range(num_RUs):
+                for s in range(num_slices):
+                    for k in range(num_UEs):
+                        if z_ib_sk[i, b, s, k] > 0.5:
+                            users.append(f"(RU{i},Slice{s},UE{k})")
+            logger.add(f"RB allocation violation: RB {b} allocated to {total_allocation:.4f} users. Users: {', '.join(users)}")
+            rb_allocation_valid = False
+    
+    validation_results['rb_allocation'] = rb_allocation_valid
+    logger.add(f"RB allocation constraint validated: {rb_allocation_valid}")
+    
+    # 3. Validate power distribution logic (evenly distributed per RU)
+    power_distribution_valid = True
+    for i in range(num_RUs):
+        assigned_rbs = np.sum(z_ib_sk[i, :, :, :])
+        if assigned_rbs > 0:
+            P_i_val = P_i[i] if isinstance(P_i, (list, np.ndarray)) else P_i
+            expected_power_per_rb = P_i_val / assigned_rbs
+            
+            for b in range(num_RBs):
+                for s in range(num_slices):
+                    for k in range(num_UEs):
+                        if z_ib_sk[i, b, s, k] > 0.5:
+                            actual_power = p_ib_sk[i, b, s, k]
+                            if abs(actual_power - expected_power_per_rb) > 1e-6:
+                                logger.add(f"Power distribution violation: RU{i} RB{b} has power {actual_power:.6f}, expected {expected_power_per_rb:.6f}")
+                                power_distribution_valid = False
+    
+    validation_results['power_distribution'] = power_distribution_valid
+    logger.add(f"Power distribution logic validated: {power_distribution_valid}")
+    
+    # 4. Validate total power constraint
+    power_constraint_valid = True
+    for i in range(num_RUs):
+        total_power = np.sum(p_ib_sk[i, :, :, :])
+        P_i_val = P_i[i] if isinstance(P_i, (list, np.ndarray)) else P_i
+        if total_power > P_i_val + 1e-6:
+            logger.add(f"Power constraint violation: RU {i} uses {total_power:.4f} > limit {P_i_val}")
+            power_constraint_valid = False
+    
+    validation_results['power_constraint'] = power_constraint_valid
+    logger.add(f"Power constraint validated: {power_constraint_valid}")
+    
+    # 5. Validate mu = z * p constraint
+    mu_constraint_valid = True
+    for i in range(num_RUs):
+        for b in range(num_RBs):
+            for s in range(num_slices):
+                for k in range(num_UEs):
+                    expected_mu = z_ib_sk[i, b, s, k] * p_ib_sk[i, b, s, k]
+                    actual_mu = mu_ib_sk[i, b, s, k]
+                    if abs(expected_mu - actual_mu) > 1e-6:
+                        logger.add(f"mu constraint violation: mu[{i},{b},{s},{k}] = {actual_mu:.6f} != z*p = {expected_mu:.6f}")
+                        mu_constraint_valid = False
+    
+    validation_results['mu_constraint'] = mu_constraint_valid
+    logger.add(f"mu = z * p constraint validated: {mu_constraint_valid}")
+    
+    # 6. Validate rate calculation and minimum rate constraint
+    rate_constraint_valid = True
+    calculated_rates = np.zeros((num_slices, num_UEs))
+    
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if slice_mapping[s, k] == 1:
+                rate = 0
+                for b in range(num_RBs):
+                    snr = 0
+                    for i in range(num_RUs):
+                        snr += gain[i, b, s, k] * mu_ib_sk[i, b, s, k]
+                    if snr > 0:
+                        rate += rb_bandwidth * np.log2(1 + snr)
+                
+                calculated_rates[s, k] = rate
+                
+                # Check if calculated rate matches stored rate
+                if abs(rate - total_R_sk[s, k]) > 1e-3:
+                    logger.add(f"Rate calculation mismatch: UE({s},{k}) calculated={rate:.4f}, stored={total_R_sk[s, k]:.4f}")
+                    rate_constraint_valid = False
+                
+                # Check minimum rate constraint for served UEs
+                if pi_sk[s, k] > 0:
+                    R_min_val = R_min[k] if isinstance(R_min, (list, np.ndarray)) else R_min
+                    if rate < R_min_val - 1e-6:
+                        logger.add(f"Min rate violation: UE({s},{k}) rate {rate:.4f} < R_min {R_min_val}")
+                        rate_constraint_valid = False
+    
+    validation_results['rate_constraint'] = rate_constraint_valid
+    logger.add(f"Rate constraint validated: {rate_constraint_valid}")
+    
+    # 7. Validate serving condition (pi_sk logic)
+    serving_logic_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            has_rb = np.any(z_ib_sk[:, :, s, k] > 0.5)
+            is_mapped = slice_mapping[s, k] == 1
+            is_served = pi_sk[s, k] > 0.5
+            
+            if is_mapped and has_rb and not is_served:
+                logger.add(f"Serving logic violation: UE({s},{k}) has RB and is mapped but not served")
+                serving_logic_valid = False
+            elif (not is_mapped or not has_rb) and is_served:
+                logger.add(f"Serving logic violation: UE({s},{k}) is served but lacks RB or mapping")
+                serving_logic_valid = False
+    
+    validation_results['serving_logic'] = serving_logic_valid
+    logger.add(f"Serving logic validated: {serving_logic_valid}")
+    
+    # 8. Validate DU/CU assignments for served UEs
+    du_cu_assignment_valid = True
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if pi_sk[s, k] > 0:
+                du_assignments = np.sum(phi_j_sk[:, s, k])
+                cu_assignments = np.sum(phi_m_sk[:, s, k])
+                
+                if abs(du_assignments - 1) > 1e-6:
+                    logger.add(f"DU assignment violation: Served UE({s},{k}) assigned to {du_assignments:.4f} DUs (should be 1)")
+                    du_cu_assignment_valid = False
+                
+                if abs(cu_assignments - 1) > 1e-6:
+                    logger.add(f"CU assignment violation: Served UE({s},{k}) assigned to {cu_assignments:.4f} CUs (should be 1)")
+                    du_cu_assignment_valid = False
+            else:
+                du_assignments = np.sum(phi_j_sk[:, s, k])
+                cu_assignments = np.sum(phi_m_sk[:, s, k])
+                
+                if du_assignments > 1e-6:
+                    logger.add(f"DU assignment violation: Unserved UE({s},{k}) assigned to {du_assignments:.4f} DUs (should be 0)")
+                    du_cu_assignment_valid = False
+                
+                if cu_assignments > 1e-6:
+                    logger.add(f"CU assignment violation: Unserved UE({s},{k}) assigned to {cu_assignments:.4f} CUs (should be 0)")
+                    du_cu_assignment_valid = False
+    
+    validation_results['du_cu_assignment'] = du_cu_assignment_valid
+    logger.add(f"DU/CU assignment validated: {du_cu_assignment_valid}")
+    
+    # 9. Calculate performance metrics and distance analysis
+    total_served_ues = np.sum(pi_sk)
+    total_rate = np.sum(total_R_sk)
+    
+    # Calculate average distance between UEs and their assigned RUs
+    total_distance = 0
+    served_ues_count = 0
+    for s in range(num_slices):
+        for k in range(num_UEs):
+            if pi_sk[s, k] > 0:
+                assigned_ru = np.argmax(phi_i_sk[:, s, k])
+                distance = np.linalg.norm(ue_coords[k] - ru_coords[assigned_ru])
+                total_distance += distance
+                served_ues_count += 1
+    
+    avg_distance = total_distance / served_ues_count if served_ues_count > 0 else 0
+    
+    validation_results['metrics'] = {
+        'served_ues': total_served_ues,
+        'total_rate': total_rate,
+        'avg_ue_ru_distance': avg_distance,
+        'power_efficiency': np.sum([np.sum(p_ib_sk[i, :, :, :]) / (P_i[i] if isinstance(P_i, (list, np.ndarray)) else P_i) 
+                                   for i in range(num_RUs)]) / num_RUs
+    }
+    
+    logger.add(f"\nPerformance Metrics:")
+    logger.add(f"Total served UEs: {total_served_ues}")
+    logger.add(f"Total data rate: {total_rate:.4f}")
+    logger.add(f"Average UE-RU distance: {avg_distance:.4f}")
+    logger.add(f"Average power efficiency: {validation_results['metrics']['power_efficiency']:.4f}")
+    
+    # Overall validation result
+    all_constraints = [nearest_assignment_valid, rb_allocation_valid, power_distribution_valid,
+                      power_constraint_valid, mu_constraint_valid, rate_constraint_valid, 
+                      serving_logic_valid, du_cu_assignment_valid]
+    all_valid = all(all_constraints)
+    
+    validation_results['all_valid'] = all_valid
+    logger.add(f"\nAll constraints validated: {all_valid}")
+    
+    return all_valid, validation_results
