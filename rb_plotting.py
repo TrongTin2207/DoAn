@@ -52,16 +52,3 @@ def plot_grouped_bar(data, errors=None, labels=None, title="", xlabel="", ylabel
     plt.savefig(full_path, dpi=300)
     print(f"Plot saved to {full_path}")
     plt.show()
-
-# === Example call ===
-# plot_grouped_bar(
-#     data=[[12, 11, 11], [20, 18, 18], [20, 19, 19]],
-#     errors=[[2, 2.5, 2.4], [1.2, 1.4, 1.1], [0.3, 0.2, 0.1]],
-#     labels=["0.2", "0.5", "0.8"],
-#     title="Hình 5.7 Số lượng người dùng được chấp thuận",
-#     xlabel="Gamma",
-#     ylabel="User Accepted",
-#     legend_labels=["Global", "Doraemon", "Nearest-RU"],
-#     xtick_labels=["0.2", "0.5", "0.8"],
-#     filename="hinh5_7.png"
-# )

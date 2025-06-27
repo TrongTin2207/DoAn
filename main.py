@@ -265,6 +265,15 @@ def main():
             validation_log_file.write(f"{log}\n")
         validation_logger.logs = []  # Clear logs for next validation
         
+        served_ues = int(np.sum(np.any(rates_long_term > 0, axis=0)))
+        total_rate = float(np.sum(rates_long_term))
+        power_efficiency = total_rate / (np.sum(P_i) * num_RBs) if np.sum(P_i) > 0 else 0
+
+        validation_log_file.write("Performance metrics:\n")
+        validation_log_file.write(f"- Served UEs: {served_ues}\n")
+        validation_log_file.write(f"- Total data rate: {total_rate:.4f} bps\n")
+        validation_log_file.write(f"- Power efficiency: {power_efficiency:.4f}\n")
+
         # Long-term solution plotting
         logger.add(f"[solve] Frame {f+1}: Creating long-term RB assignment plots")
         try:
@@ -368,31 +377,40 @@ def main():
                     validation_log_file.write(f"{log}\n")
                 validation_logger.logs = []  # Clear logs for next validation
                 
-                # Short-term solution plotting
-                logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Creating short-term RB assignment plots")
-                try:
-                    data = np.sum(short_z_ib_sk, axis=(0, 1))  # shape: (num_slices, num_UEs)
-                    plot_grouped_bar(
-                        data.T,
-                        title=f"RB Assignments per UE (Frame {f+1}, Time Slot {t+1})",
-                        xlabel="UE Index",
-                        ylabel="Number of RBs Assigned",
-                        legend_labels=slices,
-                        xtick_labels=[str(i) for i in range(num_UEs)],
-                        filename=f"shortterm_rb_assignments_f{f+1}_t{t+1}.png",
-                        save_path=SAVE_PATH
-                    )
-                    logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Short-term plots saved successfully")
-                except Exception as e:
-                    logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Error creating short-term plots: {str(e)}")
-            else:
-                validation_log_file.write("No feasible short-term solution found.\n")
-            
-            # Save short-term results
-            other_function.save_object(
-                f"{filename_solution}_shortterm_f{f}_t{t}.pkl.gz",
-                (short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk)
+        served_ues = int(np.sum(np.any(rates_short_term > 0, axis=0)))
+        total_rate = float(np.sum(rates_short_term))
+        power_efficiency = total_rate / (np.sum(P_i) * num_RBs) if np.sum(P_i) > 0 else 0
+
+        validation_log_file.write("Performance metrics:\n")
+        validation_log_file.write(f"- Served UEs: {served_ues}\n")
+        validation_log_file.write(f"- Total data rate: {total_rate:.4f} bps\n")
+        validation_log_file.write(f"- Power efficiency: {power_efficiency:.4f}\n")
+
+            # Short-term solution plotting
+        logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Creating short-term RB assignment plots")
+        try:
+            data = np.sum(short_z_ib_sk, axis=(0, 1))  # shape: (num_slices, num_UEs)
+            plot_grouped_bar(
+                data.T,
+                title=f"RB Assignments per UE (Frame {f+1}, Time Slot {t+1})",
+                xlabel="UE Index",
+                ylabel="Number of RBs Assigned",
+                legend_labels=slices,
+                xtick_labels=[str(i) for i in range(num_UEs)],
+                filename=f"shortterm_rb_assignments_f{f+1}_t{t+1}.png",
+                save_path=SAVE_PATH
             )
+            logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Short-term plots saved successfully")
+        except Exception as e:
+            logger.add(f"[solve] Frame {f+1}, Time slot {t+1}: Error creating short-term plots: {str(e)}")
+        else:
+            validation_log_file.write("No feasible short-term solution found.\n")
+        
+        # Save short-term results
+        other_function.save_object(
+            f"{filename_solution}_shortterm_f{f}_t{t}.pkl.gz",
+            (short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk)
+        )
 
         # --- RANDOM BASELINE SOLUTION ---
         logger.add(f"[solve] Frame {f+1}: Random baseline solution")
@@ -558,5 +576,127 @@ def main():
     validation_log_file.close()
     logger.add("[solve] All frames completed. Simulation finished.")
 
+    # --- Collect metrics for comparison plots (long-term, short-term, random, nearest) ---
+    rb_usage_longterm = []
+    rb_usage_shortterm = []
+    rb_usage_random = []
+    rb_usage_nearest = []
+    power_usage_longterm = []
+    power_usage_shortterm = []
+    power_usage_random = []
+    power_usage_nearest = []
+    users_served_longterm = []
+    users_served_shortterm = []
+    users_served_random = []
+    users_served_nearest = []
+    acceptance_longterm = []
+    acceptance_shortterm = []
+    acceptance_random = []
+    acceptance_nearest = []
+
+    for f in range(num_frame):
+        # ...existing code...
+        # After long-term solution
+        if 'z_ib_sk' in locals() and 'p_ib_sk' in locals() and 'pi_sk' in locals():
+            rb_usage_longterm.append(np.sum(z_ib_sk))
+            power_usage_longterm.append(np.sum(p_ib_sk))
+            users_served_longterm.append(int(np.sum(pi_sk)))
+            acceptance_longterm.append(np.sum(pi_sk) / num_UEs)
+        else:
+            rb_usage_longterm.append(0)
+            power_usage_longterm.append(0)
+            users_served_longterm.append(0)
+            acceptance_longterm.append(0)
+        # After short-term solution (use last time slot)
+        if 'short_z_ib_sk' in locals() and 'short_p_ib_sk' in locals() and 'short_pi_sk' in locals():
+            rb_usage_shortterm.append(np.sum(short_z_ib_sk))
+            power_usage_shortterm.append(np.sum(short_p_ib_sk))
+            users_served_shortterm.append(int(np.sum(short_pi_sk)))
+            acceptance_shortterm.append(np.sum(short_pi_sk) / num_UEs)
+        else:
+            rb_usage_shortterm.append(0)
+            power_usage_shortterm.append(0)
+            users_served_shortterm.append(0)
+            acceptance_shortterm.append(0)
+        # After random RU solution
+        if 'random_result' in locals() and random_result is not None and isinstance(random_result, (list, tuple)) and len(random_result) >= 8:
+            random_pi_sk, random_z_ib_sk, random_p_ib_sk, *_ = random_result
+            rb_usage_random.append(np.sum(random_z_ib_sk))
+            power_usage_random.append(np.sum(random_p_ib_sk))
+            users_served_random.append(int(np.sum(random_pi_sk)))
+            acceptance_random.append(np.sum(random_pi_sk) / num_UEs)
+        else:
+            rb_usage_random.append(0)
+            power_usage_random.append(0)
+            users_served_random.append(0)
+            acceptance_random.append(0)
+        # After nearest RU solution
+        if 'nearest_result' in locals() and nearest_result is not None and isinstance(nearest_result, (list, tuple)) and len(nearest_result) >= 8:
+            nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, *_ = nearest_result
+            rb_usage_nearest.append(np.sum(nearest_z_ib_sk))
+            power_usage_nearest.append(np.sum(nearest_p_ib_sk))
+            users_served_nearest.append(int(np.sum(nearest_pi_sk)))
+            acceptance_nearest.append(np.sum(nearest_pi_sk) / num_UEs)
+        else:
+            rb_usage_nearest.append(0)
+            power_usage_nearest.append(0)
+            users_served_nearest.append(0)
+            acceptance_nearest.append(0)
+
+    # === Plot comparison charts at the end ===
+    frames = np.arange(1, num_frame + 1)
+    width = 0.18
+    plt.figure(figsize=(12, 6))
+    plt.bar(frames - 1.5*width, rb_usage_longterm, width, label='Proposed (Long-term)')
+    plt.bar(frames - 0.5*width, rb_usage_shortterm, width, label='Proposed (Short-term)')
+    plt.bar(frames + 0.5*width, rb_usage_random, width, label='Random RU')
+    plt.bar(frames + 1.5*width, rb_usage_nearest, width, label='Nearest RU')
+    plt.xlabel('Frame')
+    plt.ylabel('Total RB Usage')
+    plt.title('Total RB Usage per Frame')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{SAVE_PATH}/compare_rb_usage.png')
+    plt.close()
+
+    plt.figure(figsize=(12, 6))
+    plt.bar(frames - 1.5*width, power_usage_longterm, width, label='Proposed (Long-term)')
+    plt.bar(frames - 0.5*width, power_usage_shortterm, width, label='Proposed (Short-term)')
+    plt.bar(frames + 0.5*width, power_usage_random, width, label='Random RU')
+    plt.bar(frames + 1.5*width, power_usage_nearest, width, label='Nearest RU')
+    plt.xlabel('Frame')
+    plt.ylabel('Total Power Usage')
+    plt.title('Total Power Usage per Frame')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{SAVE_PATH}/compare_power_usage.png')
+    plt.close()
+
+    plt.figure(figsize=(12, 6))
+    plt.bar(frames - 1.5*width, users_served_longterm, width, label='Proposed (Long-term)')
+    plt.bar(frames - 0.5*width, users_served_shortterm, width, label='Proposed (Short-term)')
+    plt.bar(frames + 0.5*width, users_served_random, width, label='Random RU')
+    plt.bar(frames + 1.5*width, users_served_nearest, width, label='Nearest RU')
+    plt.xlabel('Frame')
+    plt.ylabel('Number of Users Served')
+    plt.title('Number of Users Served per Frame')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{SAVE_PATH}/compare_users_served.png')
+    plt.close()
+
+    plt.figure(figsize=(12, 6))
+    plt.bar(frames - 1.5*width, acceptance_longterm, width, label='Proposed (Long-term)')
+    plt.bar(frames - 0.5*width, acceptance_shortterm, width, label='Proposed (Short-term)')
+    plt.bar(frames + 0.5*width, acceptance_random, width, label='Random RU')
+    plt.bar(frames + 1.5*width, acceptance_nearest, width, label='Nearest RU')
+    plt.xlabel('Frame')
+    plt.ylabel('Acceptance Rate')
+    plt.title('Acceptance Rate per Frame')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{SAVE_PATH}/compare_acceptance_rate.png')
+    plt.close()
+# ...existing code...
 if __name__ == "__main__":
     main()
