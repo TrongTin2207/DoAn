@@ -478,83 +478,85 @@ def main():
             )
 
         # --- NEAREST RU BASELINE SOLUTION ---
-        logger.add(f"[solve] Frame {f+1}: Nearest RU baseline solution")
-        validation_log_file.write(f"\n===== NEAREST RU BASELINE SOLUTION VALIDATION - FRAME {f+1} =====\n")
-        
-        # Check if nearest_ru_solution function exists in solving module
-        if hasattr(solving, 'nearest_ru_solution'):
-            nearest_result = solving.nearest_ru_solution(
+    logger.add(f"[solve] Frame {f+1}: Nearest RU baseline solution")
+    validation_log_file.write(f"\n===== NEAREST RU BASELINE SOLUTION VALIDATION - FRAME {f+1} =====\n")
+
+# Check if nearest_ru_solution function exists in solving module
+    if hasattr(solving, 'nearest_ru_solution'):
+        nearest_result = solving.nearest_ru_solution(
+        num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
+        P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
+        l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
+        coordinates_UE, coordinates_RU,
+        logger=logger
+    )
+
+    if nearest_result is None or not isinstance(nearest_result, (list, tuple)) or len(nearest_result) < 8:
+        logger.add(f"[solve] Frame {f+1}: No feasible nearest RU solution found!")
+        validation_log_file.write("No feasible nearest RU solution found.\n")
+    elif any((x is None) or (isinstance(x, np.ndarray) and x.dtype == object and np.any([xi is None for xi in x.flatten()])) for x in nearest_result):
+        logger.add(f"[solve] Frame {f+1}: No feasible nearest RU solution found!")
+        validation_log_file.write("No feasible nearest RU solution found.\n")
+    else:
+        (nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk,
+         nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk) = nearest_result
+
+        try:
+            valid_nearest, validation_summary = validate_nearest_ru_solution(
                 num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
-                P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
-                l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-                coordinates_UE, coordinates_RU,  # Add coordinates for nearest RU calculation
-                logger=logger
+                P_i, rb_bandwidth, R_min, gain, slice_mapping,
+                coordinates_UE, coordinates_RU,
+                nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk,
+                nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk,
+                logger=validation_logger
             )
-            
-            # Check if solution is valid
-            if nearest_result is None or not isinstance(nearest_result, (list, tuple)) or len(nearest_result) < 8:
-                logger.add(f"[solve] Frame {f+1}: No feasible nearest RU solution found!")
-                validation_log_file.write("No feasible nearest RU solution found.\n")
-            elif any((x is None) or (isinstance(x, np.ndarray) and x.dtype == object and np.any([xi is None for xi in x.flatten()])) for x in nearest_result):
-                logger.add(f"[solve] Frame {f+1}: No feasible nearest RU solution found!")
-                validation_log_file.write("No feasible nearest RU solution found.\n")
-            else:
-                nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk, nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk = nearest_result
-                
-                # Validate nearest RU solution using the specific validation function
-                try:
-                    valid_nearest, validation_summary = validate_nearest_ru_solution(
-                        num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
-                        P_i, rb_bandwidth, R_min, gain, slice_mapping,
-                        coordinates_UE, coordinates_RU,
-                        nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk,
-                        nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk,
-                        logger=validation_logger
-                    )
-                    validation_log_file.write(f"\nNearest RU solution validation result: {'PASSED' if valid_nearest else 'FAILED'}\n")
-                    # Write detailed validation results
-                    if 'metrics' in validation_summary:
-                        metrics = validation_summary['metrics']
-                        validation_log_file.write(f"Performance metrics:\n")
-                        validation_log_file.write(f"- Served UEs: {metrics['served_ues']}\n")
-                        validation_log_file.write(f"- Total data rate: {metrics['total_rate']:.4f} bps\n")
-                        validation_log_file.write(f"- Power efficiency: {metrics['power_efficiency']:.4f}\n")
-                    constraint_names = ['ru_assignment', 'rb_allocation', 'power_constraint',
-                                      'mu_constraint', 'rate_constraint', 'du_assignment',
-                                      'cu_assignment', 'slice_mapping']
-                    for constraint in constraint_names:
-                        if constraint in validation_summary:
-                            status = "PASSED" if validation_summary[constraint] else "FAILED"
-                            validation_log_file.write(f"- {constraint.replace('_', ' ').title()}: {status}\n")
-                    for log in validation_logger.get_logs():
-                        validation_log_file.write(f"{log}\n")
-                    validation_logger.logs = []
-                except Exception as e:
-                    valid_nearest = False
-                    logger.add(f"[solve] Frame {f+1}: Error in nearest RU solution validation: {str(e)}")
-                    validation_log_file.write(f"Nearest RU solution validation error: {str(e)}\n")
-                # Plot nearest RU solution
-                logger.add(f"[solve] Frame {f+1}: Creating nearest RU RB assignment plots")
-                try:
-                    data = np.sum(nearest_z_ib_sk, axis=(0, 1))  # shape: (num_slices, num_UEs)
-                    plot_grouped_bar(
-                        data.T,
-                        title=f"RB Assignments per UE (Nearest RU, Frame {f+1})",
-                        xlabel="UE Index",
-                        ylabel="Number of RBs Assigned",
-                        legend_labels=slices,
-                        xtick_labels=[str(i) for i in range(num_UEs)],
-                        filename=f"nearest_ru_rb_assignments_f{f+1}.png",
-                        save_path=SAVE_PATH
-                    )
-                except Exception as e:
-                    logger.add(f"[solve] Frame {f+1}: Error creating nearest RU plots: {str(e)}")
-                    validation_log_file.write(f"Error creating nearest RU plots: {str(e)}\n")
-                # Save nearest RU solution results
-                other_function.save_object(
-                    f"{filename_solution}_nearest_ru_f{f}.pkl.gz",
-                    (nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk, nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk)
+            validation_log_file.write(f"\nNearest RU solution validation result: {'PASSED' if valid_nearest else 'FAILED'}\n")
+            if 'metrics' in validation_summary:
+                metrics = validation_summary['metrics']
+                validation_log_file.write(f"Performance metrics:\n")
+                validation_log_file.write(f"- Served UEs: {metrics['served_ues']}\n")
+                validation_log_file.write(f"- Total data rate: {metrics['total_rate']:.4f} bps\n")
+                validation_log_file.write(f"- Power efficiency: {metrics['power_efficiency']:.4f}\n")
+            constraint_names = ['nearest_assignment', 'rb_allocation', 'power_distribution',
+                               'power_constraint', 'mu_constraint', 'rate_constraint',
+                               'serving_logic', 'du_cu_assignment']
+            for constraint in constraint_names:
+                if constraint in validation_summary:
+                    status = "PASSED" if validation_summary[constraint] else "FAILED"
+                    validation_log_file.write(f"- {constraint.replace('_', ' ').title()}: {status}\n")
+            for log in validation_logger.get_logs():
+                validation_log_file.write(f"{log}\n")
+            validation_logger.logs = []
+        except Exception as e:
+            valid_nearest = False
+            logger.add(f"[solve] Frame {f+1}: Error in nearest RU solution validation: {str(e)}")
+            validation_log_file.write(f"Nearest RU solution validation error: {str(e)}\n")
+
+        logger.add(f"[solve] Frame {f+1}: Creating nearest RU RB assignment plots")
+        try:
+            data = np.sum(nearest_z_ib_sk, axis=(0, 1))  # shape: (num_slices, num_UEs)
+            plot_grouped_bar(
+                data.T,
+                title=f"RB Assignments per UE (Nearest RU, Frame {f+1})",
+                xlabel="UE Index",
+                ylabel="Number of RBs Assigned",
+                legend_labels=slices,
+                xtick_labels=[str(i) for i in range(num_UEs)],
+                filename=f"nearest_ru_rb_assignments_f{f+1}.png",
+                save_path=SAVE_PATH
+            )
+        except Exception as e:
+            logger.add(f"[solve] Frame {f+1}: Error creating nearest RU plots: {str(e)}")
+            validation_log_file.write(f"Error creating nearest RU plots: {str(e)}\n")
+
+        other_function.save_object(
+            f"{filename_solution}_nearest_ru_f{f}.pkl.gz",
+            (nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk,
+             nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk)
                 )
         # End of frame loop
-        validation_log_file.close()
-        logger.add("[solve] All frames completed. Simulation finished.")
+    validation_log_file.close()
+    logger.add("[solve] All frames completed. Simulation finished.")
+
+if __name__ == "__main__":
+    main()

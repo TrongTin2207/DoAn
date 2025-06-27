@@ -559,6 +559,10 @@ def nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
         (pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk)
     """
     try:
+        # Ensure coordinates are numpy arrays for vector math
+        ue_coords = np.asarray(ue_coords, dtype=float)
+        ru_coords = np.asarray(ru_coords, dtype=float)
+
         # 1. Assign each UE to its nearest RU for each slice
         phi_i_sk = np.zeros((num_RUs, num_slices, num_UEs))
         for s in range(num_slices):
@@ -566,9 +570,8 @@ def nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
                 dists = [np.linalg.norm(ue_coords[k] - ru_coords[i]) for i in range(num_RUs)]
                 nearest_i = np.argmin(dists)
                 phi_i_sk[nearest_i, s, k] = 1
-                # All other RUs remain 0 (fixed)
 
-        # 2. RB assignment: For each RB, assign it to at most one (i,s,k) where phi_i_sk[i,s,k]==1 and slice_mapping[s,k]==1
+        # 2. RB assignment
         z_ib_sk = np.zeros((num_RUs, num_RBs, num_slices, num_UEs))
         for b in range(num_RBs):
             valid_triplets = [(i, s, k) for i in range(num_RUs) for s in range(num_slices) for k in range(num_UEs)
@@ -577,7 +580,7 @@ def nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
                 i, s, k = valid_triplets[b % len(valid_triplets)]
                 z_ib_sk[i, b, s, k] = 1
 
-        # 3. Power allocation: Evenly distribute P_i per RU across its assigned RBs
+        # 3. Power allocation
         p_ib_sk = np.zeros_like(z_ib_sk)
         for i in range(num_RUs):
             assigned = np.sum(z_ib_sk[i])
@@ -591,14 +594,14 @@ def nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
         # 4. mu_ib_sk = z * p
         mu_ib_sk = z_ib_sk * p_ib_sk
 
-        # 5. pi_sk: UE is served if it is assigned any RB and slice_mapping[s, k] == 1
+        # 5. pi_sk
         pi_sk = np.zeros((num_slices, num_UEs))
         for s in range(num_slices):
             for k in range(num_UEs):
                 if np.any(z_ib_sk[:, :, s, k]) and slice_mapping[s, k] == 1:
                     pi_sk[s, k] = 1
 
-        # 6. Random DU/CU assignment (phi_j_sk, phi_m_sk) for each (s, k) where pi_sk[s, k] == 1
+        # 6. DU/CU assignment
         phi_j_sk = np.zeros((num_DUs, num_slices, num_UEs))
         phi_m_sk = np.zeros((num_CUs, num_slices, num_UEs))
         for s in range(num_slices):
@@ -607,7 +610,7 @@ def nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
                     phi_j_sk[np.random.randint(num_DUs), s, k] = 1
                     phi_m_sk[np.random.randint(num_CUs), s, k] = 1
 
-        # 7. Calculate total_R_sk (rate per (s, k))
+        # 7. Calculate total_R_sk
         total_R_sk = np.zeros((num_slices, num_UEs))
         for s in range(num_slices):
             for k in range(num_UEs):
@@ -620,7 +623,7 @@ def nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
                         rate += rb_bandwidth * np.log2(1 + snr)
                 total_R_sk[s, k] = rate
 
-        # 8. Enforce rate constraint: if rate < R_min[k], set pi_sk[s, k] = 0 and zero out assignments
+        # 8. Enforce rate constraint
         for s in range(num_slices):
             for k in range(num_UEs):
                 if pi_sk[s, k] == 1 and total_R_sk[s, k] < R_min[k]:

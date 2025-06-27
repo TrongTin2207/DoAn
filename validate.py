@@ -1075,17 +1075,27 @@ def validate_nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs,
     Returns:
         tuple: (all_valid: bool, validation_summary: dict)
     """
+def validate_nearest_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
+                                P_i, rb_bandwidth, R_min, gain, slice_mapping, ue_coords, ru_coords,
+                                pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk,
+                                logger=None):
+
     if logger is None:
         logger = ValidationLogger()
-    
+
     logger.add("\n=== Validating Nearest-RU Solution ===\n")
-    
+
+    # Ensure coordinates are NumPy arrays for vector math
+    ue_coords = np.asarray(ue_coords, dtype=float)
+    ru_coords = np.asarray(ru_coords, dtype=float)
+
     # Check if any result is None
     if any(x is None for x in [pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk, total_R_sk]):
         logger.add("Error: One or more solution results are None. Validation cannot proceed.")
         return False, {"error": "None results"}
-    
+
     validation_results = {}
+    
     
     # 1. Validate nearest RU assignment logic
     nearest_assignment_valid = True
