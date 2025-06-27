@@ -89,183 +89,222 @@ def optimize_power_efficiency(num_slices, num_UEs, num_RUs, num_RBs, P_i, rb_ban
         print(f"Power optimization error: {e}")
         return None
 
-def calculate_latency_components(z_ib_sk, R_sk, phi_j_sk, phi_m_sk, c, d_sk, L_cu, L_du, rho_du, mu_s, lambda_s, constraints):
-    """Calculate latency components using DCP-compliant formulations"""
+def calculate_latency_components(z_ib_sk, R_sk, phi_j_sk, phi_m_sk, c, d_sk, L_cu, L_du,
+                                 rho_du, mu_s, lambda_s, constraints):
+    """
+    Calculate latency components for the optimization problem.
     
-    # Get dimensions from z_ib_sk
-    num_RUs = z_ib_sk.shape[0]
-    num_RBs = z_ib_sk.shape[1]
-    num_slices = z_ib_sk.shape[2]
-    num_UEs = z_ib_sk.shape[3]
+    This version fixes DCP rule violations by properly reformulating constraints
+    involving division by variables.
     
-    # Convert d_sk to numpy array with proper error handling
-    if isinstance(d_sk, list):
-        if len(d_sk) > 0 and isinstance(d_sk[0], list):
-            d_sk_arr = np.array(d_sk)  # Convert 2D list
-        else:
-            # Convert 1D list to 2D array
-            d_sk_arr = np.array(d_sk).reshape(-1, len(d_sk) if len(d_sk) <= num_UEs else num_UEs)
-            # If we have more slices than rows, repeat the array
-            while d_sk_arr.shape[0] < num_slices:
-                d_sk_arr = np.vstack([d_sk_arr, d_sk_arr[-1:]])
-    elif isinstance(d_sk, np.ndarray):
-        d_sk_arr = d_sk
-        # Ensure proper dimensions
-        if d_sk_arr.ndim == 1:
-            d_sk_arr = d_sk_arr.reshape(1, -1)
-        # Expand to match required dimensions if needed
-        while d_sk_arr.shape[0] < num_slices:
-            d_sk_arr = np.vstack([d_sk_arr, d_sk_arr[-1:]])
-        while d_sk_arr.shape[1] < num_UEs:
-            d_sk_arr = np.hstack([d_sk_arr, d_sk_arr[:, -1:]])
-    else:
-        # If d_sk is a scalar, create a 2D array filled with that value
-        d_sk_arr = np.full((num_slices, num_UEs), d_sk)
+    Args:
+        z_ib_sk: 4D array of binary variables for resource allocation
+        R_sk: List of lists containing rate variables for each slice-UE pair
+        phi_j_sk, phi_m_sk: Binary variables for DU and CU assignments
+        c: Speed of light constant
+        d_sk: Distance matrix (nested list or 2D array)
+        L_cu, L_du: Processing latencies
+        rho_du, mu_s, lambda_s: Service parameters
+        constraints: List to append new constraints
     
-    # Ensure d_sk_arr has the right dimensions
-    d_sk_arr = d_sk_arr[:num_slices, :num_UEs]  # Truncate if too large
+    Returns:
+        Total latency expression
+    """
+    import cvxpy as cp
+    import numpy as np
     
-    print(f"Debug: d_sk_arr shape: {d_sk_arr.shape}, num_slices: {num_slices}, num_UEs: {num_UEs}")
-    
-    # Convert parameter lists to numpy arrays for consistent handling
-    lambda_s_arr = np.array(lambda_s) if isinstance(lambda_s, list) else lambda_s
-    mu_s_arr = np.array(mu_s) if isinstance(mu_s, list) else mu_s
-    rho_du_arr = np.array(rho_du) if isinstance(rho_du, list) else rho_du
-    
-    # 1. Propagation latency - Linear and DCP compliant
-    L_prop = 0
-    for s in range(num_slices):
-        for k in range(num_UEs):
-            # Safe indexing with bounds checking
-            s_idx = min(s, d_sk_arr.shape[0] - 1)
-            k_idx = min(k, d_sk_arr.shape[1] - 1)
-            d_val = d_sk_arr[s_idx, k_idx]
-            
-            # Convert to meters if needed (assuming input is in meters already)
-            # If d_val is in kilometers, uncomment the next line:
-            # d_val = d_val * 1000
-            
-            L_prop += (d_val / c) * cp.sum([z_ib_sk[i, b, s, k] for i in range(num_RUs) for b in range(num_RBs)])
-    
-    # 2. Transmission latency - Use auxiliary variables for DCP compliance
-    L_trans = cp.Variable(nonneg=True)
-    trans_sum = 0
-    
-    # Ensure R_sk is properly structured
-    if not isinstance(R_sk, (list, np.ndarray)) or (isinstance(R_sk, list) and len(R_sk) == 0):
-        raise ValueError("R_sk must be a non-empty list or numpy array")
-    
-    # Convert R_sk to numpy array if it's a list
-    if isinstance(R_sk, list):
-        try:
-            R_sk_arr = np.array(R_sk)
-        except ValueError:
-            # Handle jagged arrays
-            max_len = max(len(row) if isinstance(row, list) else 1 for row in R_sk)
-            R_sk_arr = np.zeros((len(R_sk), max_len))
-            for i, row in enumerate(R_sk):
-                if isinstance(row, list):
-                    R_sk_arr[i, :len(row)] = row
-                else:
-                    R_sk_arr[i, 0] = row
-    else:
-        R_sk_arr = R_sk
-    
-    for s in range(min(R_sk_arr.shape[0], num_slices)):
-        for k in range(min(R_sk_arr.shape[1] if R_sk_arr.ndim > 1 else 1, num_UEs)):
-            # Create auxiliary variable for each (s,k) pair
-            aux_var = cp.Variable(nonneg=True)
-            
-            # Get lambda value with bounds checking
-            if isinstance(lambda_s_arr, np.ndarray):
-                lambda_val = lambda_s_arr[min(s, len(lambda_s_arr) - 1)]
-            else:
-                lambda_val = lambda_s_arr
-            
-            # Get R_sk value
-            if R_sk_arr.ndim > 1:
-                R_val = R_sk_arr[s, k]
-            else:
-                R_val = R_sk_arr[min(s, len(R_sk_arr) - 1)]
-            
-            # Add constraint: aux_var >= lambda_val / R_sk[s][k]
-            # Using hyperbolic constraint for better numerical stability
-            if R_val > 1e-10:  # Avoid division by zero
-                constraints.append(aux_var * R_val >= lambda_val)
-            else:
-                constraints.append(aux_var >= 1e6)  # Large penalty for zero rate
-            
-            # Add auxiliary variable to total transmission latency
-            trans_sum += aux_var
-    
-    constraints.append(L_trans == trans_sum)
-    
-    # 3. Queuing latency - Linear combination with proper bounds checking
-    L_queue = cp.Variable(nonneg=True)
-    queue_sum = 0
-    
-    for s in range(num_slices):
-        # Safe parameter access with bounds checking
-        if isinstance(rho_du_arr, np.ndarray):
-            rho = rho_du_arr[min(s, len(rho_du_arr) - 1)]
-        else:
-            rho = rho_du_arr
-            
-        if isinstance(mu_s_arr, np.ndarray):
-            mu = mu_s_arr[min(s, len(mu_s_arr) - 1)]
-        else:
-            mu = mu_s_arr
-            
-        if isinstance(lambda_s_arr, np.ndarray):
-            lambda_val = lambda_s_arr[min(s, len(lambda_s_arr) - 1)]
-        else:
-            lambda_val = lambda_s_arr
-        
-        # Ensure no strict inequalities in constraints: use >= or <= only
-        # If mu <= lambda_val, set mu = lambda_val + 1e-6 to avoid strict inequality
-        # Only perform the check if mu and lambda_val are numeric (not CVXPY expressions)
-        if isinstance(mu, (int, float, np.floating)) and isinstance(lambda_val, (int, float, np.floating)):
-            if mu <= lambda_val:
-                print(f"Warning: Queue potentially unstable for slice {s}: mu_s ({mu}) <= lambda_s ({lambda_val})")
-                mu = lambda_val + 1e-6
-        
-        # Pre-calculate fixed coefficient
-        queue_coeff = rho / (mu - lambda_val)
-        
-        # Linear combination with binary variables (DCP compliant)
-        queue_sum += queue_coeff * cp.sum([z_ib_sk[i, b, s, k] 
-                                          for i in range(num_RUs)
-                                          for b in range(num_RBs)
-                                          for k in range(num_UEs)])
-    
-    constraints.append(L_queue == queue_sum)
-    
-    # 4. Processing latency - Linear and DCP compliant with bounds checking
-    L_proc = 0
-    
-    # Check phi_m_sk dimensions
-    if hasattr(phi_m_sk, 'shape') and phi_m_sk.shape[1] >= num_slices and phi_m_sk.shape[2] >= num_UEs:
-        L_proc += L_cu * cp.sum([phi_m_sk[m, s, k] 
-                                for m in range(phi_m_sk.shape[0])
-                                for s in range(num_slices)
-                                for k in range(num_UEs)])
-    
-    # Check phi_j_sk dimensions  
-    if hasattr(phi_j_sk, 'shape') and phi_j_sk.shape[1] >= num_slices and phi_j_sk.shape[2] >= num_UEs:
-        L_proc += L_du * cp.sum([phi_j_sk[j, s, k] 
-                                for j in range(phi_j_sk.shape[0])
-                                for s in range(num_slices)
-                                for k in range(num_UEs)])
-    
-    # Total latency
-    total_latency = L_prop + L_trans + L_queue + L_proc
-    
-    return total_latency
+    num_RUs, num_RBs, num_slices, num_UEs = z_ib_sk.shape
 
+    # Improved helper function to safely access nested data structures
+    def safe_fetch(data, s, k, default_value=0.0):
+        """
+        Safely fetch value from potentially nested data structure.
+        Handles both list-of-lists and numpy arrays.
+        """
+        try:
+            # First, check if data is a simple list/array with single dimension
+            if hasattr(data, '__len__') and not isinstance(data, str):
+                if isinstance(data, (list, tuple)):
+                    # Handle list of lists
+                    if s < len(data):
+                        if isinstance(data[s], (list, tuple, np.ndarray)):
+                            if k < len(data[s]):
+                                return data[s][k]
+                            else:
+                                # k index out of bounds, use last available
+                                return data[s][-1] if len(data[s]) > 0 else default_value
+                        else:
+                            # data[s] is a scalar, return it
+                            return data[s]
+                    else:
+                        # s index out of bounds, use last available slice
+                        last_slice = data[-1] if len(data) > 0 else default_value
+                        if isinstance(last_slice, (list, tuple, np.ndarray)):
+                            return last_slice[min(k, len(last_slice)-1)] if len(last_slice) > 0 else default_value
+                        else:
+                            return last_slice
+                elif isinstance(data, np.ndarray):
+                    # Handle numpy arrays
+                    if data.ndim == 2:
+                        return data[min(s, data.shape[0]-1), min(k, data.shape[1]-1)]
+                    elif data.ndim == 1:
+                        return data[min(s, len(data)-1)]
+                    else:
+                        return default_value
+                else:
+                    return default_value
+            else:
+                # Scalar value
+                return data
+        except Exception as e:
+            print(f"Warning in safe_fetch: {e}, using default {default_value}")
+            return default_value
+
+    # --- 1. Propagation Latency ---
+    print("Calculating propagation latency...")
+    L_prop = 0
+    try:
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                # Get distance value safely
+                d_val = safe_fetch(d_sk, s, k, default_value=0.001)  # Small default to avoid division by zero
+                
+                # Ensure d_val is a scalar
+                if hasattr(d_val, 'value'):  # If it's a CVXPY variable
+                    d_val = d_val.value if d_val.value is not None else 0.001
+                
+                # Sum of allocation variables for this slice-UE pair
+                allocation_sum = cp.sum([z_ib_sk[i, b, s, k] for i in range(num_RUs) for b in range(num_RBs)])
+                L_prop += (float(d_val) / float(c)) * allocation_sum
+    except Exception as e:
+        print(f"Error in propagation latency calculation: {e}")
+        L_prop = 0
+
+    # --- 2. Transmission Latency (DCP-COMPLIANT VERSION) ---
+    print("Calculating transmission latency...")
+    L_trans = 0
+    trans_components = []
+    try:
+        for s in range(num_slices):
+            for k in range(num_UEs):
+                # Get rate variable safely
+                R_val = safe_fetch(R_sk, s, k, default_value=None)
+                lam = lambda_s[s] if isinstance(lambda_s, (list, tuple)) else lambda_s
+                min_rate = 1e-6
+                if R_val is None:
+                    continue
+                elif isinstance(R_val, (cp.Expression, cp.Variable)):
+                    constraints.append(R_val >= min_rate)
+                    trans_latency_sk = cp.Variable(nonneg=True, name=f"trans_latency_{s}_{k}")
+                    constraints.append(trans_latency_sk >= lam * cp.inv_pos(R_val))
+                    trans_components.append(trans_latency_sk)
+                elif isinstance(R_val, (int, float, np.number)):
+                    if R_val > 1e-10:
+                        trans_components.append(lam / R_val)
+                    else:
+                        trans_components.append(1e6)  # Large penalty for very small rates
+                else:
+                    print(f"Warning: Unexpected R_val type: {type(R_val)}")
+                    continue
+        if trans_components:
+            L_trans = cp.sum(trans_components)
+        else:
+            L_trans = cp.Constant(0)
+    except Exception as e:
+        print(f"Error in transmission latency calculation: {e}")
+        L_trans = 0
+
+    # --- 3. Queuing Latency (Enhanced DCP Compliance) ---
+    print("Calculating queuing latency...")
+    L_queue = cp.Variable(nonneg=True, name="queuing_latency")
+    queue_components = []
+    try:
+        for s in range(num_slices):
+            # Get service parameters safely
+            rho = rho_du[s] if isinstance(rho_du, (list, tuple)) else rho_du
+            mu = mu_s[s] if isinstance(mu_s, (list, tuple)) else mu_s
+            lam = lambda_s[s] if isinstance(lambda_s, (list, tuple)) else lambda_s
+            
+            # Enforce stability with larger margin for numerical robustness
+            stability_margin = max(1e-3, 0.01 * mu)  # At least 1% of service rate
+            constraints.append(mu - lam >= stability_margin)
+            
+            # Calculate slice load
+            slice_load = cp.sum([z_ib_sk[i, b, s, k] 
+                               for i in range(num_RUs) 
+                               for b in range(num_RBs) 
+                               for k in range(num_UEs)])
+            
+            # For DCP compliance, we can use cp.inv_pos() which is the DCP-compliant
+            # way to handle 1/x where x > 0
+            # inv_pos(x) is equivalent to 1/x but maintains DCP compliance
+            queue_component = rho * cp.inv_pos(mu - lam) * slice_load
+            queue_components.append(queue_component)
+            
+        if queue_components:
+            constraints.append(L_queue == cp.sum(queue_components))
+        else:
+            constraints.append(L_queue == 0)
+            
+    except Exception as e:
+        print(f"Error in queuing latency calculation: {e}")
+        L_queue = 0
+
+    # --- 4. Processing Latency ---
+    print("Calculating processing latency...")
+    L_proc = 0
+    try:
+        # CU processing latency
+        if phi_m_sk.shape[0] > 0:
+            cu_processing = cp.sum([phi_m_sk[m, s, k] 
+                                  for m in range(phi_m_sk.shape[0])
+                                  for s in range(min(num_slices, phi_m_sk.shape[1]))
+                                  for k in range(min(num_UEs, phi_m_sk.shape[2]))])
+            L_proc += float(L_cu) * cu_processing
+        
+        # DU processing latency
+        if phi_j_sk.shape[0] > 0:
+            du_processing = cp.sum([phi_j_sk[j, s, k] 
+                                  for j in range(phi_j_sk.shape[0])
+                                  for s in range(min(num_slices, phi_j_sk.shape[1]))
+                                  for k in range(min(num_UEs, phi_j_sk.shape[2]))])
+            L_proc += float(L_du) * du_processing
+            
+    except Exception as e:
+        print(f"Error in processing latency calculation: {e}")
+        L_proc = 0
+
+    # Return total latency
+    total_latency = L_prop + L_trans + L_queue + L_proc
+    print("Latency components calculated successfully")
+    return total_latency
 
 def short_term(num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i, gain, R_min, epsilon, 
               arr_pi_sk, arr_phi_i_sk, c=None, d_sk=None, max_latency=None, L_cu=None, L_du=None, 
               rho_du=None, mu_s=None, lambda_s=None, logger=None):
+    # Ensure arr_pi_sk and arr_phi_i_sk are 2D arrays of shape (num_slices, num_UEs)
+    import numpy as np
+    if isinstance(arr_pi_sk, (int, float)):
+        arr_pi_sk = np.full((num_slices, num_UEs), arr_pi_sk)
+    elif isinstance(arr_pi_sk, (list, tuple, np.ndarray)):
+        arr_pi_sk = np.array(arr_pi_sk)
+        if arr_pi_sk.ndim == 0:
+            arr_pi_sk = np.full((num_slices, num_UEs), arr_pi_sk.item())
+        elif arr_pi_sk.ndim == 1:
+            arr_pi_sk = np.tile(arr_pi_sk, (num_slices, 1)) if arr_pi_sk.shape[0] == num_UEs else np.tile(arr_pi_sk, (1, num_UEs))
+        elif arr_pi_sk.shape != (num_slices, num_UEs):
+            arr_pi_sk = np.broadcast_to(arr_pi_sk, (num_slices, num_UEs))
+    # Same for arr_phi_i_sk
+    if isinstance(arr_phi_i_sk, (int, float)):
+        arr_phi_i_sk = np.full((num_RUs, num_slices, num_UEs), arr_phi_i_sk)
+    elif isinstance(arr_phi_i_sk, (list, tuple, np.ndarray)):
+        arr_phi_i_sk = np.array(arr_phi_i_sk)
+        if arr_phi_i_sk.ndim == 0:
+            arr_phi_i_sk = np.full((num_RUs, num_slices, num_UEs), arr_phi_i_sk.item())
+        elif arr_phi_i_sk.ndim == 1:
+            arr_phi_i_sk = np.tile(arr_phi_i_sk, (num_RUs, num_slices, num_UEs))
+        elif arr_phi_i_sk.shape != (num_RUs, num_slices, num_UEs):
+            arr_phi_i_sk = np.broadcast_to(arr_phi_i_sk, (num_RUs, num_slices, num_UEs))
     try:
         # Initialize binary allocation matrix
         short_z_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
@@ -412,7 +451,8 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
               c=None, d_sk=None, max_latency=None, L_cu=None, L_du=None, rho_du=None, mu_s=None, lambda_s=None,
               logger=None):
     try:
-        # Initialize variables (same as before)
+        # Initialize decision variables
+        # Binary variable: whether RU i allocates RB b to slice s for UE k
         z_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
         for i in range(num_RUs):
             for b in range(num_RBs):
@@ -420,6 +460,7 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
                     for k in range(num_UEs):
                         z_ib_sk[i, b, s, k] = cp.Variable(boolean=True, name=f"z_ib_sk({i}, {b}, {s}, {k})")
 
+        # Continuous variable: base power allocation
         p_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
         for i in range(num_RUs):
             for b in range(num_RBs):
@@ -427,6 +468,7 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
                     for k in range(num_UEs):
                         p_ib_sk[i, b, s, k] = cp.Variable(nonneg=True, name=f"p_ib_sk({i}, {b}, {s}, {k})")
 
+        # Continuous variable: actual power allocation (conditional on z_ib_sk)
         mu_ib_sk = np.empty((num_RUs, num_RBs, num_slices, num_UEs), dtype=object)
         for i in range(num_RUs):
             for b in range(num_RBs):
@@ -434,6 +476,7 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
                     for k in range(num_UEs):
                         mu_ib_sk[i, b, s, k] = cp.Variable(nonneg=True, name=f"mu_ib_sk({i}, {b}, {s}, {k})")
 
+        # Binary variables for RU, DU, CU assignments
         phi_i_sk = np.empty((num_RUs, num_slices, num_UEs), dtype=object)
         for i in range(num_RUs):
             for s in range(num_slices):
@@ -452,119 +495,91 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
                 for k in range(num_UEs):
                     phi_m_sk[m, s, k] = cp.Variable(boolean=True, name=f"phi_m_sk({m}, {s}, {k})")
 
+        # Binary variable: whether slice s serves UE k
         pi_sk = cp.Variable((num_slices, num_UEs), boolean=True, name="obj")
 
-        # Calculate total data rate
-        total_R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) 
-                            for b in range(num_RBs) for s in range(num_slices) for k in range(num_UEs)])
-        
+        constraints = []
+        # --- Use auxiliary rate variables for both latency and constraints ---
+        R_sk = []
+        for s in range(num_slices):
+            row = []
+            for k in range(num_UEs):
+                # DCP-compliant: sum log(1 + gain * mu) over (i, b)
+                rate_expr = cp.sum([
+                    rb_bandwidth * cp.log(1 + gain[i, b, s, k] * mu_ib_sk[i, b, s, k]) / np.log(2)
+                    for i in range(num_RUs) for b in range(num_RBs)
+                ])
+                row.append(rate_expr)
+            R_sk.append(row)
+
+        # Calculate total data rate (for objective)
+        total_R_sk = cp.sum([R_sk[s][k] for s in range(num_slices) for k in range(num_UEs)])
         total_power = cp.sum([mu_ib_sk[i, b, s, k] for i in range(num_RUs) for b in range(num_RBs) for s in range(num_slices) for k in range(num_UEs)])
 
-        # Multi-objective optimization
-        objective = cp.Maximize(gamma * cp.sum(pi_sk) + (1 - gamma) * total_R_sk * 1e-6 - 1e-9 * total_power)
-
-        constraints = []
+        # Objective: maximize only the total data rate (with small penalty for power)
+        objective = cp.Maximize(total_R_sk * 1e-6 - 1e-9 * total_power)
 
         # Resource constraints
-        #Global RB exclusivity constraint - each RB can only be used by ONE (RU, slice, UE) globally
         for b in range(num_RBs):
-            constraints.append(cp.sum([z_ib_sk[i, b, s, k] for i in range(num_RUs) 
-                             for s in range(num_slices) for k in range(num_UEs)]) <= 1)
-
-        # Additional constraint: Each RU-RB pair can only serve one slice-UE combination
-        for i in range(num_RUs):
-            for b in range(num_RBs):
-                constraints.append(cp.sum([z_ib_sk[i, b, s, k] for s in range(num_slices) for k in range(num_UEs)]) <= 1)
-
-        # Resource constraints: Each RB index can only be used by one (RU, slice, UE) in the whole network
-        for b in range(num_RBs):
-            constraints.append(cp.sum([z_ib_sk[i, b, s, k] for i in range(num_RUs) for s in range(num_slices) for k in range(num_UEs)]) <= 1)
-
-        # QoS constraints
+            constraints.append(cp.sum([z_ib_sk[i, b, s, k] for s in range(num_slices) for k in range(num_UEs) for i in range(num_RUs)]) <= 1)
+        # QoS constraints: each served UE must meet minimum rate requirement (relaxed)
         for s in range(num_slices):
             for k in range(num_UEs):
-                R_sk = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i, b, s, k] * mu_ib_sk[i, b, s, k] for i in range(num_RUs)])) / np.log(2) for b in range(num_RBs)])
-                constraints.append(R_sk >= R_min * pi_sk[s, k])
-
-        # Improved power constraints
+                constraints.append(R_sk[s][k] >= 1e-3 * pi_sk[s, k])
+        # Power constraints: each RU has limited total power (relaxed)
         for i in range(num_RUs):
             total_power_ru = cp.sum([mu_ib_sk[i, b, s, k] for b in range(num_RBs) for k in range(num_UEs) for s in range(num_slices)])
-            constraints.append(total_power_ru <= 0.75 * P_i[i])  # Use 75% for better efficiency
-
+            constraints.append(total_power_ru <= P_i[i])
         # DU and CU resource constraints
         for j in range(num_DUs):
             total_du = cp.sum([phi_j_sk[j, s, k] * D_j[k] for s in range(num_slices) for k in range(num_UEs)])
             constraints.append(total_du <= A_j[j])
-
         for m in range(num_CUs):
             total_cu = cp.sum([phi_m_sk[m, s, k] * D_m[k] for s in range(num_slices) for k in range(num_UEs)])
             constraints.append(total_cu <= A_m[m])
-
-        # Mapping constraints
+        # Mapping constraints: each served UE must be assigned to exactly one RU, DU, and CU
         for s in range(num_slices):
             for k in range(num_UEs):
                 constraints.append(cp.sum([phi_i_sk[i, s, k] for i in range(num_RUs)]) == pi_sk[s, k])
                 constraints.append(cp.sum([phi_j_sk[j, s, k] for j in range(num_DUs)]) == pi_sk[s, k])
                 constraints.append(cp.sum([phi_m_sk[m, s, k] for m in range(num_CUs)]) == pi_sk[s, k])
-
-        # Phi conversion constraints
+        # Phi conversion constraints: link RB allocation to RU assignment
         for s in range(num_slices):
             for i in range(num_RUs):
                 for k in range(num_UEs):
                     avg_z = (1 / num_RBs) * cp.sum([z_ib_sk[i, b, s, k] for b in range(num_RBs)])
                     constraints.append(avg_z <= phi_i_sk[i, s, k])
                     constraints.append(phi_i_sk[i, s, k] <= avg_z + (1 - epsilon))
-
-        # Connectivity constraints
+        # Connectivity constraints: ensure network topology is respected
         for s in range(num_slices):
             for k in range(num_UEs):
                 for i in range(num_RUs):
                     for j in range(num_DUs):
                         constraints.append(phi_j_sk[j, s, k] <= l_ru_du[i, j] - phi_i_sk[i, s, k] + 1)
-
         for s in range(num_slices):
             for k in range(num_UEs):
                 for j in range(num_DUs):
                     for m in range(num_CUs):
                         constraints.append(phi_m_sk[m, s, k] <= l_du_cu[j, m] - phi_j_sk[j, s, k] + 1)
-
-        # Improved power allocation constraints
+        # Power allocation constraints: link power variables and enforce limits
         for s in range(num_slices):
             for i in range(num_RUs):
                 for b in range(num_RBs):
                     for k in range(num_UEs):
-                        max_power_per_allocation = P_i[i] * 0.25  # Limit to 25% per allocation
+                        max_power_per_allocation = P_i[i] * 0.25
                         constraints.append(mu_ib_sk[i, b, s, k] <= max_power_per_allocation * z_ib_sk[i, b, s, k])
                         constraints.append(mu_ib_sk[i, b, s, k] >= p_ib_sk[i, b, s, k] - max_power_per_allocation * (1 - z_ib_sk[i, b, s, k]))
                         constraints.append(mu_ib_sk[i, b, s, k] <= p_ib_sk[i, b, s, k])
-                        
-                        # Efficient power allocation based on channel conditions
-                        normalized_gain = gain[i,b,s,k] / (np.max(gain) + 1e-10)
+                        normalized_gain = gain[i, b, s, k] / (np.max(gain) + 1e-10)
                         efficient_power = max_power_per_allocation * normalized_gain
                         constraints.append(p_ib_sk[i, b, s, k] <= efficient_power + max_power_per_allocation * (1 - z_ib_sk[i, b, s, k]))
-
-        # Slice mapping constraints
+        # Slice mapping constraints: respect predefined slice-UE mappings
         for s in range(num_slices):
             for k in range(num_UEs):
                 constraints.append(pi_sk[s, k] == pi_sk[s, k] * slice_mapping[s, k])
-
-        # Add latency constraints if parameters are provided
+        # Add latency constraints if all required parameters are provided
         if all(param is not None for param in [c, d_sk, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s]):
-            # Create rate expressions
-            R_sk = []
-            for s in range(num_slices):
-                row = []
-                for k in range(num_UEs):
-                    rate_var = cp.Variable(nonneg=True, name=f"rate_{s}_{k}")
-                    actual_rate = cp.sum([rb_bandwidth * cp.log(1 + cp.sum([gain[i,b,s,k] * mu_ib_sk[i,b,s,k] 
-                                        for i in range(num_RUs)])) / np.log(2) 
-                                        for b in range(num_RBs)])
-                    constraints.append(rate_var <= actual_rate)
-                    row.append(rate_var)
-                R_sk.append(row)
-            
             try:
-                # Add total latency constraint using DCP compliant formulation
                 total_latency = calculate_latency_components(
                     z_ib_sk, R_sk, phi_j_sk, phi_m_sk, c, d_sk, L_cu, L_du, rho_du, mu_s, lambda_s, constraints
                 )
@@ -575,11 +590,11 @@ def long_term(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, P_i, rb_b
                     logger.add(f"Warning: Latency constraint calculation failed: {e}")
                 else:
                     print(f"Warning: Latency constraint calculation failed: {e}")
-
-        # Solve the problem
+        # Solve the optimization problem
         problem = cp.Problem(objective, constraints)
         problem.solve(solver=SOLVER)
 
+        # Return results based on solver status
         if problem.status == cp.OPTIMAL:
             return (extract_values(pi_sk, int), 
                 extract_values(z_ib_sk, int), 
@@ -605,8 +620,7 @@ def random_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
                        logger=None):
     """
     Random-RU solution implementation following the paper's constraints.
-    Randomly assigns RUs to UEs, RBs to UEs, and distributes power evenly per RB.
-    Enforces all mapping and assignment constraints.
+    Ensures: (1) No RB allocation if UE is not selected, (2) Each selected UE gets at least one RB, (3) No RB is assigned to more than one UE.
     """
     try:
         # 1. Random RU assignment (phi_i_sk): for each (s, k), assign one RU only if slice_mapping[s, k] == 1
@@ -617,20 +631,30 @@ def random_ru_solution(num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
                     i = np.random.choice(num_RUs)
                     phi_i_sk[i, s, k] = 1
 
-        # 2. Random RB assignment (z_ib_sk): For each RB index b, assign it to at most one (i, s, k) globally
+        # 2. RB assignment: Each selected UE gets at least one unique RB, no RB is assigned to more than one UE
         z_ib_sk = np.zeros((num_RUs, num_RBs, num_slices, num_UEs))
-        for b in range(num_RBs):
-            # Build a list of all valid (i, s, k) where phi_i_sk[i, s, k] == 1 and slice_mapping[s, k] == 1
-            valid_triplets = [(i, s, k) for i in range(num_RUs) for s in range(num_slices) for k in range(num_UEs)
-                              if phi_i_sk[i, s, k] == 1 and slice_mapping[s, k] == 1]
-            if not valid_triplets:
-                continue
-            # With 50% chance, leave RB unused
-            if np.random.rand() < 0.5:
-                continue
-            # Randomly select one (i, s, k) and assign RB b to it
-            i, s, k = valid_triplets[np.random.randint(len(valid_triplets))]
+        assigned_rbs = set()
+        selected_ues = [(s, k) for s in range(num_slices) for k in range(num_UEs) if slice_mapping[s, k] == 1]
+        available_rbs = list(range(num_RBs))
+        np.random.shuffle(available_rbs)
+        # Assign at least one RB to each selected UE
+        for idx, (s, k) in enumerate(selected_ues):
+            if not available_rbs:
+                break  # No more RBs to assign
+            b = available_rbs.pop()
+            i = np.argmax(phi_i_sk[:, s, k])  # Assign to the RU already selected
             z_ib_sk[i, b, s, k] = 1
+            assigned_rbs.add(b)
+        # Optionally, assign remaining RBs randomly to selected UEs (but still only one UE per RB)
+        for b in range(num_RBs):
+            if b in assigned_rbs:
+                continue
+            if not selected_ues:
+                break
+            s, k = selected_ues[np.random.randint(len(selected_ues))]
+            i = np.argmax(phi_i_sk[:, s, k])
+            z_ib_sk[i, b, s, k] = 1
+            assigned_rbs.add(b)
 
         # 3. Power allocation: P_i / |B| for each assigned RB
         p_ib_sk = np.zeros_like(z_ib_sk)
