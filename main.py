@@ -18,8 +18,8 @@ from rb_plotting import plot_grouped_bar
 num_RUs = 3                            # Số lượng RU (bao gồm RU ở tâm)
 num_DUs = 2                             # Số lượng DU
 num_CUs = 2                             # Số lượng CU
-num_UEs = 5                             # Tổng số lượng user cho tất dịch vụ (eMBB, mMTC, URLLC)
-num_RBs = 10                             # Số lượng của RBs
+num_UEs = 10                             # Tổng số lượng user cho tất dịch vụ (eMBB, mMTC, URLLC)
+num_RBs = 15                             # Số lượng của RBs
 num_antennas = 8                        # Số lượng anntenas
 num_slices = 2                          # Số lượng loại dịch vụ - Changed to 2 to use all slice types
 
@@ -576,7 +576,7 @@ def main():
     validation_log_file.close()
     logger.add("[solve] All frames completed. Simulation finished.")
 
-    # --- Collect metrics for comparison plots (long-term, short-term, random, nearest) ---
+
     rb_usage_longterm = []
     rb_usage_shortterm = []
     rb_usage_random = []
@@ -657,6 +657,7 @@ def main():
     plt.legend()
     plt.tight_layout()
     plt.savefig(f'{SAVE_PATH}/compare_rb_usage.png')
+    print(f"Saved figure: {SAVE_PATH}/compare_rb_usage.png")
     plt.close()
 
     plt.figure(figsize=(12, 6))
@@ -670,6 +671,7 @@ def main():
     plt.legend()
     plt.tight_layout()
     plt.savefig(f'{SAVE_PATH}/compare_power_usage.png')
+    print(f"Saved figure: {SAVE_PATH}/compare_power_usage.png")
     plt.close()
 
     plt.figure(figsize=(12, 6))
@@ -683,6 +685,7 @@ def main():
     plt.legend()
     plt.tight_layout()
     plt.savefig(f'{SAVE_PATH}/compare_users_served.png')
+    print(f"Saved figure: {SAVE_PATH}/compare_users_served.png")
     plt.close()
 
     plt.figure(figsize=(12, 6))
@@ -696,7 +699,8 @@ def main():
     plt.legend()
     plt.tight_layout()
     plt.savefig(f'{SAVE_PATH}/compare_acceptance_rate.png')
+    print(f"Saved figure: {SAVE_PATH}/compare_acceptance_rate.png")
     plt.close()
-# ...existing code...
+
 if __name__ == "__main__":
     main()
