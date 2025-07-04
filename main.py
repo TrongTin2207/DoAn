@@ -8,7 +8,7 @@ import datetime
 import os
 import matplotlib.pyplot as plt
 from validate import (validate_long_term_solution, validate_short_term_solution, 
-                     validate_random_ru_solution, validate_nearest_ru_solution, 
+                     validate_random_ru_solution, validate_nearest_ru_solution, validate_latency_constraints,
                      ValidationLogger)
 from rb_plotting import plot_grouped_bar
 
@@ -186,7 +186,17 @@ def main():
                 num_UEs, num_slices, D_j_random_list, D_m_random_list, R_min_random_list
             )
 
+         # Latency parameters based on formulas (applied for all solutions)
+        max_latency = 0.001  # 1ms maximum latency
+        L_cu = 0.0002  # 0.2ms CU processing latency
+        L_du = 0.0001  # 0.1ms DU processing latency
+        rho_du = [0.7, 0.8]  # Traffic intensity per slice
+        mu_s = [1000, 1200]  # Service rates per slice (packets/second)
+        lambda_s = [800, 900]  # Arrival rates per slice (packets/second)   
+        validation_log_file.write(f"Latency parameters: max_latency={max_latency} ms, L_cu={L_cu} ms, L_du={L_du} ms\n")
+        validation_log_file.write(f"rho_du={rho_du}, mu_s={mu_s}, lambda_s={lambda_s}\n")
         # Calculate channel gain
+        
         gain = wireless.channel_gain(distances_RU_UE, num_slices, num_RUs, num_UEs, num_RBs, num_antennas, 
                                     path_loss_ref, path_loss_exp, noise_power_watts)
         other_function.save_object(
@@ -212,9 +222,21 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs, 
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m, 
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            logger=logger
+            logger=logger,
+            max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s
         )
-
+        # --- Log latency if available in result ---
+        if hasattr(long_term_result, '__len__') and len(long_term_result) == 9:
+            *main_vars, latency_val = long_term_result
+            validation_log_file.write(f"\nLong-term latency (if calculated): {latency_val}\n")
+            # Always validate latency constraints for long-term
+            valid_latency, latency_logs = validate_latency_constraints(
+                num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
+                z_ib_sk, rates_long_term, phi_j_sk, phi_m_sk, pi_sk,
+                speed_of_light_km_ms, distances_RU_UE, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger=validation_logger)
+            validation_log_file.write(f"Long-term latency constraint: {'PASSED' if valid_latency else 'FAILED'}\n")
+            for log in latency_logs:
+                validation_log_file.write(f"{log}\n")
         # Check if any results are None before unpacking
         if any(x is None for x in long_term_result):
             logger.add(f"[solve] Frame {f+1}: No feasible solution found in long-term!")
@@ -258,6 +280,7 @@ def main():
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
             pi_sk, z_ib_sk, p_ib_sk, mu_ib_sk, phi_i_sk, phi_j_sk, phi_m_sk,
+            c=speed_of_light_km_ms, d_sk=distances_RU_UE, max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s,
             logger=validation_logger
         )
         validation_log_file.write(f"\nLong-term validation result: {'PASSED' if valid_long_term else 'FAILED'}\n")
@@ -351,7 +374,8 @@ def main():
                 short_term_result = solving.short_term(
                     num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth, P_i,
                     short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
-                    logger=logger
+                    logger=logger,
+                    max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s
                 )
                 
                 if not any(x is None for x in short_term_result):
@@ -364,12 +388,25 @@ def main():
                 
             short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk, short_total_R_sk = short_term_result
             
+            # --- Log latency if available in result (short-term) ---
+            if hasattr(short_term_result, '__len__') and len(short_term_result) == 6:
+                *main_vars, latency_val = short_term_result
+                validation_log_file.write(f"\nShort-term latency (if calculated): {latency_val}\n")
+                valid_latency, latency_logs = validate_latency_constraints(
+                    num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
+                    short_z_ib_sk, rates_short_term, None, None, short_pi_sk,
+                    speed_of_light_km_ms, short_distances_RU_UE, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger=validation_logger)
+                validation_log_file.write(f"Short-term latency constraint: {'PASSED' if valid_latency else 'FAILED'}\n")
+                for log in latency_logs:
+                    validation_log_file.write(f"{log}\n")
+            
             # Validate short-term solution
             if short_pi_sk is not None:
                 valid_short_term, rates_short_term = validate_short_term_solution(
                     num_slices, num_UEs, num_RUs, num_RBs, rb_bandwidth,
                     P_i, short_gain, R_min, epsilon, arr_pi_sk, arr_phi_i_sk,
                     short_pi_sk, short_z_ib_sk, short_p_ib_sk, short_mu_ib_sk,
+                    c=speed_of_light_km_ms, d_sk=short_distances_RU_UE, max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s,
                     logger=validation_logger
                 )
                 validation_log_file.write(f"\nShort-term validation result: {'PASSED' if valid_short_term else 'FAILED'}\n")
@@ -420,80 +457,100 @@ def main():
             num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
             P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
             l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
-            logger=logger
+            logger=logger,
+            max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s
         )
         
         # Defensive: check for None in arrays robustly
-        if random_result is None or not isinstance(random_result, (list, tuple)) or len(random_result) < 8:
-            logger.add(f"[solve] Frame {f+1}: No feasible random solution found!")
-            validation_log_file.write("No feasible random solution found.\n")
-        elif any((x is None) or (isinstance(x, np.ndarray) and x.dtype == object and np.any([xi is None for xi in x.flatten()])) for x in random_result):
+        if (
+            random_result is None 
+            or not isinstance(random_result, (list, tuple)) 
+            or len(random_result) < 8
+            or any((x is None) or (isinstance(x, np.ndarray) and x.dtype == object and np.any(x == None)) for x in random_result)
+        ):
             logger.add(f"[solve] Frame {f+1}: No feasible random solution found!")
             validation_log_file.write("No feasible random solution found.\n")
         else:
-            random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk = random_result
-            
-            # Validate random solution using the specific validation function
-            try:
-                valid_random, validation_summary = validate_random_ru_solution(
-                    num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
-                    P_i, rb_bandwidth, R_min, gain, slice_mapping,
-                    random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, 
-                    random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk,
-                    logger=validation_logger
-                )
-                
-                validation_log_file.write(f"\nRandom solution validation result: {'PASSED' if valid_random else 'FAILED'}\n")
-                
-                # Write detailed validation results
-                if 'metrics' in validation_summary:
-                    metrics = validation_summary['metrics']
-                    validation_log_file.write(f"Performance metrics:\n")
-                    validation_log_file.write(f"- Served UEs: {metrics['served_ues']}\n")
-                    validation_log_file.write(f"- Total data rate: {metrics['total_rate']:.4f} bps\n")
-                    validation_log_file.write(f"- Power efficiency: {metrics['power_efficiency']:.4f}\n")
-                
-                # Write constraint validation details
-                constraint_names = ['ru_assignment', 'rb_allocation', 'power_constraint', 
-                                  'mu_constraint', 'rate_constraint', 'du_assignment', 
-                                  'cu_assignment', 'slice_mapping']
-                for constraint in constraint_names:
-                    if constraint in validation_summary:
-                        status = "PASSED" if validation_summary[constraint] else "FAILED"
-                        validation_log_file.write(f"- {constraint.replace('_', ' ').title()}: {status}\n")
-                
-                for log in validation_logger.get_logs():
-                    validation_log_file.write(f"{log}\n")
-                validation_logger.logs = []
-                
-            except Exception as e:
-                valid_random = False
-                logger.add(f"[solve] Frame {f+1}: Error in random solution validation: {str(e)}")
-                validation_log_file.write(f"Random solution validation error: {str(e)}\n")
-            
-            # Plot random solution
-            logger.add(f"[solve] Frame {f+1}: Creating random RB assignment plots")
-            try:
-                data = np.sum(random_z_ib_sk, axis=(0, 1))  # shape: (num_slices, num_UEs)
-                plot_grouped_bar(
-                    data.T,
-                    title=f"RB Assignments per UE (Random, Frame {f+1})",
-                    xlabel="UE Index",
-                    ylabel="Number of RBs Assigned",
-                    legend_labels=slices,
-                    xtick_labels=[str(i) for i in range(num_UEs)],
-                    filename=f"random_rb_assignments_f{f+1}.png",
-                    save_path=SAVE_PATH
-                )
-            except Exception as e:
-                logger.add(f"[solve] Frame {f+1}: Error creating random plots: {str(e)}")
-                validation_log_file.write(f"Error creating random plots: {str(e)}\n")
-            
-            # Save random solution results
-            other_function.save_object(
-                f"{filename_solution}_random_f{f}.pkl.gz",
-                (random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk)
+            if len(random_result) == 9:
+                *main_vars, latency_val = random_result
+                validation_log_file.write(f"\nRandom baseline latency (if calculated): {latency_val:.6f}\n")
+            else:
+                main_vars = random_result
+
+            (
+                random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk,
+                random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk
+            ) = main_vars
+
+    # --- Validate random solution ---
+        try:
+            valid_random, validation_summary = validate_random_ru_solution(
+                num_slices, num_UEs, num_RUs, num_DUs, num_CUs, num_RBs,
+                P_i, rb_bandwidth, R_min, gain, slice_mapping,
+                random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk, 
+                random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk,
+                c=speed_of_light_km_ms, d_sk=distances_RU_UE, max_latency=max_latency,
+                L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s,
+                logger=validation_logger
             )
+
+            validation_log_file.write(f"\nRandom solution validation result: {'PASSED' if valid_random else 'FAILED'}\n")
+
+        # --- Log metrics ---
+            if 'metrics' in validation_summary:
+                metrics = validation_summary['metrics']
+                validation_log_file.write("Performance metrics:\n")
+                validation_log_file.write(f"- Served UEs: {metrics['served_ues']}\n")
+                validation_log_file.write(f"- Total data rate: {metrics['total_rate']:.4f} bps\n")
+                validation_log_file.write(f"- Power efficiency: {metrics['power_efficiency']:.4f}\n")
+
+        # --- Log constraint results ---
+            constraint_names = [
+            'ru_assignment', 'rb_allocation', 'power_constraint',
+            'mu_constraint', 'rate_constraint', 'du_assignment',
+            'cu_assignment', 'slice_mapping', 'latency_constraint'
+            ]
+            for constraint in constraint_names:
+                if constraint in validation_summary:
+                    status = "PASSED" if validation_summary[constraint] else "FAILED"
+                    validation_log_file.write(f"- {constraint.replace('_', ' ').title()}: {status}\n")
+
+        # --- Log detailed latency or other logs ---
+            for log in validation_logger.get_logs():
+                validation_log_file.write(f"{log}\n")
+            validation_logger.logs = []
+
+        except Exception as e:
+            valid_random = False
+            logger.add(f"[solve] Frame {f+1}: Error in random solution validation: {str(e)}")
+            validation_log_file.write(f"Random solution validation error: {str(e)}\n")
+
+    # --- Plot RB assignment ---
+        try:
+            logger.add(f"[solve] Frame {f+1}: Creating random RB assignment plots")
+            data = np.sum(random_z_ib_sk, axis=(0, 1))  # shape: (num_slices, num_UEs)
+            plot_grouped_bar(
+                data.T,
+                title=f"RB Assignments per UE (Random, Frame {f+1})",
+                xlabel="UE Index",
+                ylabel="Number of RBs Assigned",
+                legend_labels=slices,
+                xtick_labels=[str(i) for i in range(num_UEs)],
+                filename=f"random_rb_assignments_f{f+1}.png",
+                save_path=SAVE_PATH
+            )
+        except Exception as e:
+            logger.add(f"[solve] Frame {f+1}: Error creating random plots: {str(e)}")
+            validation_log_file.write(f"Error creating random plots: {str(e)}\n")
+
+    # --- Save solution ---
+        other_function.save_object(
+            f"{filename_solution}_random_f{f}.pkl.gz",
+            (
+                random_pi_sk, random_z_ib_sk, random_p_ib_sk, random_mu_ib_sk,
+                random_phi_i_sk, random_phi_j_sk, random_phi_m_sk, random_total_R_sk
+            )
+        )
 
         # --- NEAREST RU BASELINE SOLUTION ---
     logger.add(f"[solve] Frame {f+1}: Nearest RU baseline solution")
@@ -506,7 +563,8 @@ def main():
         P_i, rb_bandwidth, D_j, D_m, R_min, gain, A_j, A_m,
         l_ru_du, l_du_cu, epsilon, gamma, slice_mapping,
         coordinates_UE, coordinates_RU,
-        logger=logger
+        logger=logger,
+        max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s
     )
 
     if nearest_result is None or not isinstance(nearest_result, (list, tuple)) or len(nearest_result) < 8:
@@ -516,8 +574,19 @@ def main():
         logger.add(f"[solve] Frame {f+1}: No feasible nearest RU solution found!")
         validation_log_file.write("No feasible nearest RU solution found.\n")
     else:
+        # --- Log latency if available in result (nearest RU baseline) ---
+        if hasattr(nearest_result, '__len__') and len(nearest_result) == 9:
+            *main_vars, latency_val = nearest_result
+            validation_log_file.write(f"\nNearest RU baseline latency (if calculated): {latency_val}\n")
+            valid_latency, latency_logs = validate_latency_constraints(
+                num_slices, num_UEs, num_RUs, num_RBs, num_DUs, num_CUs,
+                nearest_z_ib_sk, None, nearest_phi_j_sk if 'nearest_phi_j_sk' in locals() else None, nearest_phi_m_sk if 'nearest_phi_m_sk' in locals() else None, nearest_pi_sk,
+                speed_of_light_km_ms, distances_RU_UE, max_latency, L_cu, L_du, rho_du, mu_s, lambda_s, logger=validation_logger)
+            validation_log_file.write(f"Nearest RU baseline latency constraint: {'PASSED' if valid_latency else 'FAILED'}\n")
+            for log in latency_logs:
+                validation_log_file.write(f"{log}\n")
         (nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk,
-         nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk) = nearest_result
+         nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk) = nearest_result[:8]
 
         try:
             valid_nearest, validation_summary = validate_nearest_ru_solution(
@@ -526,6 +595,7 @@ def main():
                 coordinates_UE, coordinates_RU,
                 nearest_pi_sk, nearest_z_ib_sk, nearest_p_ib_sk, nearest_mu_ib_sk,
                 nearest_phi_i_sk, nearest_phi_j_sk, nearest_phi_m_sk, nearest_total_R_sk,
+                c=speed_of_light_km_ms, d_sk=distances_RU_UE, max_latency=max_latency, L_cu=L_cu, L_du=L_du, rho_du=rho_du, mu_s=mu_s, lambda_s=lambda_s,
                 logger=validation_logger
             )
             validation_log_file.write(f"\nNearest RU solution validation result: {'PASSED' if valid_nearest else 'FAILED'}\n")
